@@ -8,11 +8,11 @@
 - 每次修改前先读对应 task 的验收条件
 - 改动 loop.ts 必须同步更新单测
 - 不要跨 Phase 超前实现
-```
 
-**`docs/refactoring-plan.md`**
-
-然后告诉 agent：
 ```
-请阅读 docs/refactoring-plan.md，从 Phase 1 的 task 1.1 开始实施。
-每完成一个 task 的验收条件，在文件里勾选对应的 checkbox，再进行下一个。
+## 执行规范：
+1. 每次只做一个 task，完成后说明改了哪些文件
+2. 做完 Phase 1 的所有 task 后等待确认，再继续 Phase 2
+3. 修改前先读对应源文件，不要假设内容
+4. bug 修复优先于新功能
+5. 不要引入 package.json 里没有的新依赖，除非任务明确需要

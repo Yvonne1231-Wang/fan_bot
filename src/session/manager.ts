@@ -22,10 +22,12 @@ const DEFAULT_MAX_CONTEXT_MESSAGES = 40;
 export class SessionManagerImpl implements SessionManager {
   private readonly store: SessionStore;
   private readonly maxContextMessages: number;
+  private readonly createdAtCache = new Map<string, number>();
 
   constructor(options: SessionManagerOptions) {
     this.store = options.store;
-    this.maxContextMessages = options.maxContextMessages ?? DEFAULT_MAX_CONTEXT_MESSAGES;
+    this.maxContextMessages =
+      options.maxContextMessages ?? DEFAULT_MAX_CONTEXT_MESSAGES;
   }
 
   /**
@@ -41,10 +43,10 @@ export class SessionManagerImpl implements SessionManager {
     const session = await this.store.load(id);
 
     if (session) {
+      this.createdAtCache.set(id, session.meta.createdAt);
       return session.messages;
     }
 
-    // New session - return empty
     return [];
   }
 
@@ -58,12 +60,12 @@ export class SessionManagerImpl implements SessionManager {
    */
   async save(id: string, messages: Message[]): Promise<void> {
     const now = Date.now();
-    const existing = await this.store.load(id);
+    const createdAt = this.createdAtCache.get(id) ?? now;
 
     const session: Session = {
       meta: {
         id,
-        createdAt: existing?.meta.createdAt ?? now,
+        createdAt,
         updatedAt: now,
         messageCount: messages.length,
       },
@@ -89,24 +91,54 @@ export class SessionManagerImpl implements SessionManager {
       return messages;
     }
 
-    // Always keep first message (usually system)
+    const dropped = messages.length - this.maxContextMessages;
+    console.log(`[session] Context pruned: dropped ${dropped} oldest messages`);
+
     const firstMessage = messages[0];
     const toPrune = messages.slice(1);
-
-    // Calculate how many to keep from the end
     const keepCount = this.maxContextMessages - 1;
 
     if (keepCount <= 0) {
-      // Edge case: max is 1, just keep first
       return [firstMessage];
     }
 
-    // Keep last N messages, but don't break tool pairs
     let keptFromEnd = toPrune.slice(-keepCount);
 
-    // Check if we broke a tool pair
-    // If first kept message is tool_result, we need to find its tool_use
-    // This is simplified - full implementation would track tool_use_id
+    const toolUseIds = new Set<string>();
+    for (const msg of keptFromEnd) {
+      for (const block of msg.content) {
+        if (block.type === 'tool_use') {
+          toolUseIds.add(block.id);
+        }
+      }
+    }
+
+    const toolResultIds = new Set<string>();
+    for (const msg of keptFromEnd) {
+      for (const block of msg.content) {
+        if (block.type === 'tool_result') {
+          toolResultIds.add(block.tool_use_id);
+        }
+      }
+    }
+
+    const additionalMessages: Message[] = [];
+    for (const msg of toPrune.slice(0, -keepCount)) {
+      for (const block of msg.content) {
+        if (block.type === 'tool_use' && toolResultIds.has(block.id)) {
+          additionalMessages.push(msg);
+          break;
+        }
+        if (block.type === 'tool_result' && toolUseIds.has(block.tool_use_id)) {
+          additionalMessages.push(msg);
+          break;
+        }
+      }
+    }
+
+    if (additionalMessages.length > 0) {
+      keptFromEnd = [...additionalMessages, ...keptFromEnd];
+    }
 
     return [firstMessage, ...keptFromEnd];
   }
@@ -138,6 +170,8 @@ export class SessionManagerImpl implements SessionManager {
  * @param options - Configuration options
  * @returns SessionManager instance
  */
-export function createSessionManager(options: SessionManagerOptions): SessionManager {
+export function createSessionManager(
+  options: SessionManagerOptions,
+): SessionManager {
   return new SessionManagerImpl(options);
 }

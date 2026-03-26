@@ -71,6 +71,10 @@ async function testSimpleConversation(
     toolRegistry: {
       getSchemas: () => [],
       dispatch: async () => '',
+      dispatchWithConfirmation: async (
+        _name: string,
+        _input: Record<string, unknown>,
+      ) => '',
       register: function (tool: Tool): void {
         throw new Error('Function not implemented.');
       },
@@ -136,6 +140,12 @@ async function testToolUsage(
         }
         throw new Error(`Unknown tool: ${name}`);
       },
+      dispatchWithConfirmation: async (
+        name: string,
+        input: Record<string, unknown>,
+      ) => {
+        return '';
+      },
       register: function (tool: Tool): void {
         throw new Error('Function not implemented.');
       },
@@ -172,6 +182,10 @@ async function testMultiTurnConversation(
     toolRegistry: {
       getSchemas: () => [],
       dispatch: async () => '',
+      dispatchWithConfirmation: async (
+        _name: string,
+        _input: Record<string, unknown>,
+      ) => '',
       register: function (tool: Tool): void {
         throw new Error('Function not implemented.');
       },
@@ -189,6 +203,10 @@ async function testMultiTurnConversation(
     toolRegistry: {
       getSchemas: () => [],
       dispatch: async () => '',
+      dispatchWithConfirmation: async (
+        _name: string,
+        _input: Record<string, unknown>,
+      ) => '',
       register: function (tool: Tool): void {
         throw new Error('Function not implemented.');
       },

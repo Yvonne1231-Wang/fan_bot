@@ -17,11 +17,6 @@
  *   DEBUG=                      // Disable all debug output (default)
  */
 
-const DEBUG_ENV = process.env.DEBUG || '';
-
-/**
- * Log levels for more granular control.
- */
 export enum LogLevel {
   INFO = 'info',
   WARN = 'warn',
@@ -30,13 +25,6 @@ export enum LogLevel {
   VERBOSE = 'verbose',
 }
 
-/**
- * Check if a namespace pattern matches an actual namespace.
- * Supports wildcards:
- *   - '*' matches everything in that segment
- *   - 'foo:*' matches 'foo:bar', 'foo:baz', etc.
- *   - 'foo' matches only 'foo' (not 'foo:bar')
- */
 function matchesPattern(pattern: string, namespace: string): boolean {
   if (pattern === '*') return true;
 
@@ -54,13 +42,14 @@ function matchesPattern(pattern: string, namespace: string): boolean {
   return patternParts.length === namespaceParts.length;
 }
 
-/**
- * Check if a namespace is enabled based on DEBUG env var.
- */
-function isEnabled(namespace: string): boolean {
-  if (!DEBUG_ENV) return false;
+function isEnabledNow(namespace: string): boolean {
+  const debugEnv = process.env.DEBUG || '';
+  if (!debugEnv) return false;
 
-  const patterns = DEBUG_ENV.split(',').map((p) => p.trim()).filter(Boolean);
+  const patterns = debugEnv
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
 
   for (const pattern of patterns) {
     if (matchesPattern(pattern, namespace)) return true;
@@ -83,7 +72,6 @@ function timestamp(): string {
  * @returns Logger object with info, warn, error, debug, verbose methods
  */
 export function createDebug(namespace: string): DebugLogger {
-  const enabled = isEnabled(namespace);
   const prefix = `[${timestamp()}] [${namespace}]`;
 
   function formatMessage(
@@ -95,15 +83,18 @@ export function createDebug(namespace: string): DebugLogger {
     let formatted = `${prefix} [${levelStr}] ${message}`;
 
     if (args.length > 0) {
-      formatted += ' ' + args
-        .map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a)))
-        .join(' ');
+      formatted +=
+        ' ' +
+        args
+          .map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a)))
+          .join(' ');
     }
 
     return formatted;
   }
 
   function log(level: LogLevel, message: string, ...args: unknown[]): void {
+    const enabled = isEnabledNow(namespace);
     if (!enabled) return;
 
     const output = formatMessage(level, message, ...args);
@@ -124,7 +115,7 @@ export function createDebug(namespace: string): DebugLogger {
   }
 
   return {
-    enabled,
+    enabled: isEnabledNow(namespace),
     namespace,
 
     info(message: string, ...args: unknown[]): void {
@@ -147,20 +138,14 @@ export function createDebug(namespace: string): DebugLogger {
       log(LogLevel.VERBOSE, message, ...args);
     },
 
-    /**
-     * Log timing information in a consistent format.
-     */
     timing(label: string, startMs: number, endMs?: number): void {
-      if (!enabled) return;
+      if (!isEnabledNow(namespace)) return;
       const duration = endMs ? endMs - startMs : Date.now() - startMs;
       console.log(`${prefix} [TIMING] ${label}: ${duration}ms`);
     },
 
-    /**
-     * Log an object with syntax highlighting.
-     */
     obj(label: string, obj: unknown): void {
-      if (!enabled) return;
+      if (!isEnabledNow(namespace)) return;
       console.log(`${prefix} [${label}]`);
       console.dir(obj, { depth: 5, colors: true });
     },

@@ -1,6 +1,14 @@
 // ─── JSONL Session Store ────────────────────────────────────────────────────
 
-import { mkdir, readFile, writeFile, readdir, unlink, access } from 'fs/promises';
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  readdir,
+  unlink,
+  access,
+  stat,
+} from 'fs/promises';
 import { join, parse } from 'path';
 import type { Session, SessionMeta, SessionStore, Message } from './types.js';
 
@@ -56,7 +64,10 @@ export class JSONLStore implements SessionStore {
     const filePath = this.getFilePath(id);
 
     try {
-      const content = await readFile(filePath, 'utf-8');
+      const [content, fileStats] = await Promise.all([
+        readFile(filePath, 'utf-8'),
+        stat(filePath),
+      ]);
       const lines = content.trim().split('\n').filter(Boolean);
 
       const messages: Message[] = [];
@@ -65,22 +76,15 @@ export class JSONLStore implements SessionStore {
           const message = JSON.parse(line) as Message;
           messages.push(message);
         } catch {
-          // Skip malformed lines
           continue;
         }
       }
 
-      // Get file stats for metadata
-      const stats = await readFile(filePath).then(() => ({ 
-        birthtimeMs: Date.now(), 
-        mtimeMs: Date.now() 
-      }));
-
       return {
         meta: {
           id,
-          createdAt: stats.birthtimeMs,
-          updatedAt: stats.mtimeMs,
+          createdAt: fileStats.birthtimeMs,
+          updatedAt: fileStats.mtimeMs,
           messageCount: messages.length,
         },
         messages,

@@ -13,6 +13,8 @@ export interface Tool {
 
   /** Execute the tool with given input */
   handler: (input: Record<string, unknown>) => Promise<string>;
+  riskLevel?: 'low' | 'medium' | 'high';
+  requiresConfirmation?: boolean;
 }
 
 // ─── Tool Registry Interface ────────────────────────────────────────────────
@@ -21,12 +23,12 @@ export interface Tool {
  * Interface for tool registry.
  */
 export interface ToolRegistry {
-  /** Register a tool */
   register(tool: Tool): void;
-
-  /** Get all tool schemas */
   getSchemas(): ToolSchema[];
-
-  /** Dispatch a tool call */
   dispatch(name: string, input: Record<string, unknown>): Promise<string>;
+  dispatchWithConfirmation(
+    name: string,
+    input: Record<string, unknown>,
+    confirmFn?: (preview: string) => Promise<boolean>,
+  ): Promise<string>;
 }

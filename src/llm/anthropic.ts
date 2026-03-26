@@ -121,6 +121,8 @@ export function createAnthropicClient(
     chat: async (
       messages: Message[],
       tools: ToolSchema[] = [],
+      systemPrompt?: string,
+      signal?: AbortSignal,
     ): Promise<LLMResponse> => {
       const anthropicMessages: Anthropic.MessageParam[] = messages.map(
         (msg: Message) => ({
@@ -143,15 +145,19 @@ export function createAnthropicClient(
         }),
       );
 
-      const response = await client.messages.create({
-        model,
-        max_tokens: 4096,
-        messages: anthropicMessages,
-        tools:
-          anthropicTools.length > 0
-            ? (anthropicTools as Anthropic.Tool[])
-            : undefined,
-      });
+      const response = await client.messages.create(
+        {
+          model,
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages: anthropicMessages,
+          tools:
+            anthropicTools.length > 0
+              ? (anthropicTools as Anthropic.Tool[])
+              : undefined,
+        },
+        { signal },
+      );
 
       const result: LLMResponse = {
         stop_reason: fromAnthropicStopReason(response.stop_reason),
@@ -173,6 +179,90 @@ export function createAnthropicClient(
       });
 
       return result;
+    },
+
+    stream: async (
+      messages: Message[],
+      tools: ToolSchema[] = [],
+      systemPrompt: string | undefined,
+      onChunk: (text: string) => void,
+      signal?: AbortSignal,
+    ): Promise<LLMResponse> => {
+      const anthropicMessages: Anthropic.MessageParam[] = messages.map(
+        (msg: Message) => ({
+          role: msg.role,
+          content: msg.content.map(toAnthropicContent),
+        }),
+      );
+
+      const anthropicTools: Anthropic.Tool[] = tools.map(
+        (tool: ToolSchema) => ({
+          name: tool.name,
+          description: tool.description,
+          input_schema: tool.input_schema as Anthropic.Tool.InputSchema,
+        }),
+      );
+
+      const response = await client.messages.create(
+        {
+          model,
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages: anthropicMessages,
+          tools:
+            anthropicTools.length > 0
+              ? (anthropicTools as Anthropic.Tool[])
+              : undefined,
+          stream: true,
+        },
+        { signal },
+      );
+
+      let fullContent: ContentBlock[] = [];
+      let stopReason: LLMResponse['stop_reason'] = 'end_turn';
+
+      for await (const event of response) {
+        if (signal?.aborted) {
+          throw new Error('Request aborted');
+        }
+        if (event.type === 'content_block_start') {
+          if (event.content_block.type === 'text') {
+            fullContent.push({ type: 'text', text: '' });
+          } else if (event.content_block.type === 'tool_use') {
+            const tb = event.content_block as Anthropic.ToolUseBlock;
+            fullContent.push({
+              type: 'tool_use',
+              id: tb.id,
+              name: tb.name,
+              input: {},
+            });
+          }
+        } else if (event.type === 'content_block_delta') {
+          if (event.delta.type === 'text_delta') {
+            const lastBlock = fullContent[fullContent.length - 1];
+            if (lastBlock?.type === 'text') {
+              lastBlock.text += event.delta.text;
+              onChunk(event.delta.text);
+            }
+          } else if (event.delta.type === 'input_json_delta') {
+            const lastBlock = fullContent[fullContent.length - 1];
+            if (lastBlock?.type === 'tool_use') {
+              try {
+                lastBlock.input = JSON.parse(event.delta.partial_json || '{}');
+              } catch {
+                // Partial JSON, will be completed in next delta
+              }
+            }
+          }
+        } else if (event.type === 'message_delta') {
+          stopReason = fromAnthropicStopReason(event.delta.stop_reason);
+        }
+      }
+
+      return {
+        content: fullContent,
+        stop_reason: stopReason,
+      };
     },
   };
 }

@@ -1,5 +1,4 @@
-// ─── HTTP Transport ─────────────────────────────────────────────────────────
-
+import Fastify, { FastifyInstance } from 'fastify';
 import type {
   HTTPTransportOptions,
   ChatRequest,
@@ -7,57 +6,71 @@ import type {
   SessionListResponse,
 } from './types.js';
 
-// ─── Placeholder Implementation ─────────────────────────────────────────────
-
-/**
- * Start HTTP server.
- *
- * This is a placeholder implementation. Full implementation would use Fastify.
- *
- * @param options - HTTP options
- * @returns Promise that resolves when server starts
- */
-export async function startHTTP(
-  options: HTTPTransportOptions = {},
-): Promise<void> {
-  const { port = 3000, host = '0.0.0.0' } = options;
-
-  console.log(`HTTP server would start on ${host}:${port}`);
-  console.log('Note: Full HTTP implementation requires Fastify dependency');
-
-  // Placeholder - would actually start server here
-  return new Promise(() => {
-    // Keep process alive
-  });
-}
-
-// ─── Route Handlers (for reference) ─────────────────────────────────────────
-
-/**
- * POST /chat handler type.
- */
 export type ChatHandler = (body: ChatRequest) => Promise<ChatResponse>;
-
-/**
- * GET /sessions handler type.
- */
 export type SessionListHandler = () => Promise<SessionListResponse>;
 
-// ─── Server Factory ─────────────────────────────────────────────────────────
+export type HTTPHandlers = {
+  chatHandler?: ChatHandler;
+  sessionListHandler?: SessionListHandler;
+};
 
-/**
- * Create HTTP server (placeholder).
- *
- * Full implementation would:
- * 1. Create Fastify instance
- * 2. Register routes
- * 3. Add error handlers
- * 4. Start listening
- *
- * @param _options - Server options
- * @returns Server instance
- */
-export function createServer(_options: HTTPTransportOptions = {}): unknown {
-  // Placeholder - would return Fastify instance
-  return null;
+export async function createServer(
+  options: HTTPTransportOptions & HTTPHandlers = {},
+): Promise<FastifyInstance> {
+  const {
+    port = 3000,
+    host = '0.0.0.0',
+    chatHandler,
+    sessionListHandler,
+  } = options;
+
+  const app = Fastify({ logger: false });
+
+  app.post<{ Body: ChatRequest }>('/chat', async (req, reply) => {
+    const { sessionId, message } = req.body;
+
+    if (!message) {
+      return reply.status(400).send({ error: 'message is required' });
+    }
+
+    try {
+      const response = await chatHandler?.({ sessionId, message });
+      return reply.send({
+        response: response?.response ?? '',
+        sessionId: sessionId ?? response?.sessionId ?? '',
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      return reply.status(500).send({ error: errorMessage });
+    }
+  });
+
+  app.get('/sessions', async (_req, reply) => {
+    try {
+      const result = await sessionListHandler?.();
+      return reply.send({ sessions: result?.sessions ?? [] });
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      return reply.status(500).send({ error: errorMessage });
+    }
+  });
+
+  app.get('/health', async (_req, reply) => {
+    return reply.send({ status: 'ok', timestamp: Date.now() });
+  });
+
+  await app.listen({ port, host });
+  console.log(`HTTP server listening on ${host}:${port}`);
+
+  return app;
+}
+
+export async function startHTTP(
+  options: HTTPTransportOptions & HTTPHandlers = {},
+): Promise<void> {
+  await createServer(options);
+  return new Promise(() => {});
 }

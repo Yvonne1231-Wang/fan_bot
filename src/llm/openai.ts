@@ -19,6 +19,23 @@ interface OpenAIClientOptions {
   model?: string;
 }
 
+function safeParseJSON(str: string): Record<string, unknown> {
+  try {
+    return JSON.parse(str) as Record<string, unknown>;
+  } catch {
+    // Try to extract first valid JSON object
+    const match = str.match(/\{[^{}]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]) as Record<string, unknown>;
+      } catch {
+        // fallthrough
+      }
+    }
+    return { _raw: str };
+  }
+}
+
 // ─── Content Block Converters ───────────────────────────────────────────────
 
 /**
@@ -109,36 +126,35 @@ function toOpenAIMessages(
   const result: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
   for (const msg of messages) {
-    // Handle tool results first (they become separate 'tool' messages)
     const toolResults = msg.content
       .filter((b): b is ToolResultBlock => b.type === 'tool_result')
       .map(toolResultToOpenAIMessage);
 
-    // Add the main message (without tool_results)
     const content = toOpenAIContent(msg.content);
     const toolCalls = toOpenAIToolCalls(msg.content);
 
     if (msg.role === 'assistant' && toolCalls) {
-      // Assistant with tool calls
       result.push({
         role: 'assistant',
         content: content || null,
         tool_calls: toolCalls,
       } as OpenAI.Chat.ChatCompletionAssistantMessageParam);
-    } else if (msg.role === 'user') {
-      result.push({
-        role: 'user',
-        content,
-      } as OpenAI.Chat.ChatCompletionUserMessageParam);
     } else if (msg.role === 'assistant') {
       result.push({
         role: 'assistant',
         content: content || null,
       } as OpenAI.Chat.ChatCompletionAssistantMessageParam);
+    } else if (msg.role === 'user') {
+      if (toolResults.length > 0 && !content) {
+        result.push(...toolResults);
+      } else {
+        result.push({
+          role: 'user',
+          content,
+        } as OpenAI.Chat.ChatCompletionUserMessageParam);
+        result.push(...toolResults);
+      }
     }
-
-    // Append tool results after the message that triggered them
-    result.push(...toolResults);
   }
 
   return result;
@@ -171,7 +187,7 @@ function fromOpenAIResponse(
           type: 'tool_use',
           id: tc.id,
           name: tc.function.name,
-          input: JSON.parse(tc.function.arguments) as Record<string, unknown>,
+          input: safeParseJSON(tc.function.arguments),
         });
       }
     }
@@ -223,11 +239,21 @@ export function createOpenAIClient(options: OpenAIClientOptions): LLMClient {
   const model = options.model ?? 'gpt-4o';
 
   return {
-    async chat(messages: Message[], tools: ToolSchema[]): Promise<LLMResponse> {
-      // Convert internal messages to OpenAI format
+    async chat(
+      messages: Message[],
+      tools: ToolSchema[] = [],
+      systemPrompt?: string,
+      signal?: AbortSignal,
+    ): Promise<LLMResponse> {
       const openaiMessages = toOpenAIMessages(messages);
 
-      // Convert tool schemas to OpenAI tool format
+      if (systemPrompt) {
+        openaiMessages.unshift({
+          role: 'system',
+          content: systemPrompt,
+        } as OpenAI.Chat.ChatCompletionSystemMessageParam);
+      }
+
       const openaiTools: OpenAI.Chat.ChatCompletionTool[] = tools.map(
         (tool) => ({
           type: 'function',
@@ -239,16 +265,130 @@ export function createOpenAIClient(options: OpenAIClientOptions): LLMClient {
         }),
       );
 
-      // Make the API call
-      const response = await client.chat.completions.create({
-        model,
-        messages: openaiMessages,
-        tools: openaiTools.length > 0 ? openaiTools : undefined,
-        tool_choice: openaiTools.length > 0 ? 'auto' : undefined,
-      });
+      const response = await client.chat.completions.create(
+        {
+          model,
+          messages: openaiMessages,
+          tools: openaiTools.length > 0 ? openaiTools : undefined,
+          tool_choice: openaiTools.length > 0 ? 'auto' : undefined,
+        },
+        { signal },
+      );
 
-      // Convert OpenAI response to internal format
       return fromOpenAIResponse(response);
+    },
+
+    stream: async (
+      messages: Message[],
+      tools: ToolSchema[] = [],
+      systemPrompt: string | undefined,
+      onChunk: (text: string) => void,
+      signal?: AbortSignal,
+    ): Promise<LLMResponse> => {
+      const openaiMessages = toOpenAIMessages(messages);
+
+      if (systemPrompt) {
+        openaiMessages.unshift({
+          role: 'system',
+          content: systemPrompt,
+        } as OpenAI.Chat.ChatCompletionSystemMessageParam);
+      }
+
+      const openaiTools: OpenAI.Chat.ChatCompletionTool[] = tools.map(
+        (tool) => ({
+          type: 'function',
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.input_schema as Record<string, unknown>,
+          },
+        }),
+      );
+
+      const stream = await client.chat.completions.create(
+        {
+          model,
+          messages: openaiMessages,
+          tools: openaiTools.length > 0 ? openaiTools : undefined,
+          tool_choice: openaiTools.length > 0 ? 'auto' : undefined,
+          stream: true,
+        },
+        { signal },
+      );
+
+      let fullContent: ContentBlock[] = [];
+      let stopReason: LLMResponse['stop_reason'] = 'end_turn';
+      const toolCalls = new Map<
+        number,
+        { id: string; name: string; args: string }
+      >();
+
+      for await (const chunk of stream) {
+        if (signal?.aborted) {
+          throw new Error('Request aborted');
+        }
+        const delta = chunk.choices[0]?.delta;
+
+        // Handle text content
+        if (delta?.content) {
+          if (
+            fullContent.length === 0 ||
+            fullContent[fullContent.length - 1].type !== 'text'
+          ) {
+            fullContent.push({ type: 'text', text: delta.content });
+          } else {
+            const lastBlock = fullContent[fullContent.length - 1];
+            if (lastBlock.type === 'text') {
+              lastBlock.text += delta.content;
+            }
+          }
+          onChunk(delta.content);
+        }
+
+        // Handle tool calls (streaming)
+        if (delta?.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0;
+            if (tc.id) {
+              toolCalls.set(idx, {
+                id: tc.id,
+                name: tc.function?.name || '',
+                args: tc.function?.arguments || '',
+              });
+            } else if (tc.function?.arguments) {
+              const existing = toolCalls.get(idx);
+              if (existing) {
+                existing.args += tc.function.arguments;
+              }
+              if (tc.function.name && existing) {
+                existing.name = tc.function.name;
+              }
+            }
+          }
+        }
+
+        const finishReason = chunk.choices[0]?.finish_reason;
+        if (finishReason === 'stop') {
+          stopReason = 'end_turn';
+        } else if (finishReason === 'tool_calls') {
+          stopReason = 'tool_use';
+        }
+      }
+
+      // Convert tool calls map to content blocks
+      for (const [, tc] of toolCalls) {
+        fullContent.push({
+          type: 'tool_use',
+          id: tc.id,
+          name: tc.name,
+          input: safeParseJSON(tc.args || '{}'),
+        });
+      }
+
+      return {
+        content: fullContent,
+        stop_reason: stopReason,
+      };
     },
   };
 }

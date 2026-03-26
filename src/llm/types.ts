@@ -29,7 +29,11 @@ export interface ImageBlock {
   };
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlock;
+export type ContentBlock =
+  | TextBlock
+  | ToolUseBlock
+  | ToolResultBlock
+  | ImageBlock;
 
 // Message type (internal format mirrors Anthropic)
 // Note: We use ContentBlock[] internally for all messages.
@@ -62,6 +66,18 @@ export interface LLMResponse {
 
 // LLM Client interface
 export interface LLMClient {
-  chat(messages: Message[], tools?: ToolSchema[]): Promise<LLMResponse>;
-}
+  chat(
+    messages: Message[],
+    tools?: ToolSchema[],
+    systemPrompt?: string,
+    signal?: AbortSignal,
+  ): Promise<LLMResponse>;
 
+  stream?(
+    messages: Message[],
+    tools: ToolSchema[],
+    systemPrompt: string | undefined,
+    onChunk: (text: string) => void,
+    signal?: AbortSignal,
+  ): Promise<LLMResponse>;
+}

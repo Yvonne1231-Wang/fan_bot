@@ -6,11 +6,20 @@ import type { LLMClient } from './llm/types.js';
 // Load environment variables
 config();
 
-import { createLLMClient, Provider } from './llm/index.js';
-import { runAgent } from './agent/index.js';
+import { createInterface } from 'readline';
+import { createLLMClientFromEnv } from './llm/index.js';
+import {
+  runAgent,
+  buildSystemPrompt,
+  createPlan,
+  shouldPlan,
+} from './agent/index.js';
 import { createSessionManager, JSONLStore } from './session/index.js';
+import { getMemory } from './memory/index.js';
 import { registry, registerTool } from './tools/registry.js';
 import { calculatorTool } from './tools/calculator.js';
+import { readFileTool, writeFileTool, listDirTool } from './tools/files.js';
+import { shellTool } from './tools/shell.js';
 import {
   startCLI,
   parseArgs,
@@ -52,19 +61,62 @@ async function main(): Promise<void> {
  */
 async function startHTTPServer(): Promise<void> {
   const port = Number(process.env.HTTP_PORT) || DEFAULT_HTTP_PORT;
+  const llmClient = createLLMClientFromEnv();
+  const sessionManager = createSessionManager({
+    store: new JSONLStore({ dir: DEFAULT_SESSION_DIR }),
+    maxContextMessages: 40,
+  });
 
-  console.log('Starting HTTP server...');
-  console.log(`Port: ${port}`);
+  registerTool(calculatorTool);
+  registerTool(readFileTool);
+  registerTool(writeFileTool);
+  registerTool(listDirTool);
+  registerTool(shellTool);
 
-  // Note: Full HTTP implementation requires Fastify
-  // This is a placeholder that shows the architecture
-  await startHTTP({ port });
+  await startHTTP({
+    port,
+    chatHandler: async ({ sessionId, message }) => {
+      const sid = sessionId || `session-${Date.now()}`;
+      const messages = await sessionManager.load(sid);
+      const memory = getMemory();
+
+      const result = await runAgent({
+        prompt: message,
+        llmClient,
+        toolRegistry: registry,
+        initialMessages: messages,
+        maxIterations: 100,
+        systemPrompt: await buildSystemPrompt({
+          agentName: 'fan_bot',
+          memory,
+          userQuery: message,
+        }),
+      });
+
+      const prunedMessages = sessionManager.prune(result.messages);
+      await sessionManager.save(sid, prunedMessages);
+
+      return {
+        response: result.response,
+        sessionId: sid,
+        iterations: result.iterations,
+        usage: result.usage,
+      };
+    },
+    sessionListHandler: async () => {
+      const sessions = await sessionManager.list();
+      return { sessions };
+    },
+  });
 }
 
 /**
  * Start CLI transport.
  */
-async function startCLITransport(sessionId?: string, providerName?: string): Promise<void> {
+async function startCLITransport(
+  sessionId?: string,
+  providerName?: string,
+): Promise<void> {
   // Setup dependencies
   const llmClient = createLLMClientFromEnv(providerName);
   const sessionManager = createSessionManager({
@@ -74,6 +126,10 @@ async function startCLITransport(sessionId?: string, providerName?: string): Pro
 
   // Register tools
   registerTool(calculatorTool);
+  registerTool(readFileTool);
+  registerTool(writeFileTool);
+  registerTool(listDirTool);
+  registerTool(shellTool);
 
   // Load existing session or create new
   const sid = sessionId || `session-${Date.now()}`;
@@ -86,62 +142,98 @@ async function startCLITransport(sessionId?: string, providerName?: string): Pro
   }
 
   // Create input handler
-  const handler: InputHandler = async (input) => {
-    // Load current messages
-    const messages = await sessionManager.load(sid);
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  let abortController: AbortController | null = null;
 
-    // Run agent
+  const confirmFn = async (preview: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      rl.question(`\n[confirm] ${preview}\nProceed? [y/N] `, (answer) => {
+        resolve(answer.toLowerCase() === 'y');
+      });
+    });
+  };
+
+  const handler: InputHandler = async (input) => {
+    abortController = new AbortController();
+    const messages = await sessionManager.load(sid);
+    const memory = getMemory();
+
+    const systemPrompt = await buildSystemPrompt({
+      agentName: 'fan_bot',
+      memory,
+      userQuery: input,
+    });
+
+    if (shouldPlan(input)) {
+      console.log('[Planner] Creating task breakdown...');
+      const plan = await createPlan(input, llmClient);
+
+      console.log('\n[Planner] Task breakdown:');
+      plan.steps.forEach((s, i) => console.log(`  ${i + 1}. ${s.title}`));
+
+      const confirmed = await confirmFn('Execute this plan? [y/N] ');
+      if (!confirmed) {
+        console.log('Plan cancelled.');
+        return 'Okay, cancelled.';
+      }
+
+      let lastResult = '';
+      for (const step of plan.steps) {
+        console.log(
+          `\n[Step ${step.index + 1}/${plan.steps.length}] ${step.title}`,
+        );
+        step.status = 'running';
+
+        const result = await runAgent({
+          prompt: `${step.title}\n\nContext from previous steps:\n${lastResult}`,
+          llmClient,
+          toolRegistry: registry,
+          initialMessages: messages,
+          maxIterations: 100,
+          systemPrompt,
+          confirmFn,
+          abortSignal: abortController?.signal,
+        });
+
+        step.status = 'done';
+        step.result = result.response;
+        lastResult = result.response;
+
+        const prunedMessages = sessionManager.prune(result.messages);
+        await sessionManager.save(sid, prunedMessages);
+      }
+
+      console.log('\n[Planner] Plan complete.');
+      return `Plan complete.\n\nFinal result:\n${lastResult}`;
+    }
+
     const result = await runAgent({
       prompt: input,
       llmClient,
       toolRegistry: registry,
       initialMessages: messages,
-      maxIterations: 10,
+      maxIterations: 100,
+      systemPrompt,
+      onText: (delta) => process.stdout.write(delta),
+      confirmFn,
+      abortSignal: abortController?.signal,
     });
 
-    // Save updated messages
-    await sessionManager.save(sid, result.messages);
+    const prunedMessages = sessionManager.prune(result.messages);
+    await sessionManager.save(sid, prunedMessages);
 
-    return result.response;
+    return '';
   };
 
   // Start CLI
+  const memory = getMemory();
   await startCLI(handler, {
     sessionId: sid,
     welcomeMessage: `Agent CLI\nSession: ${sid}\nType "exit" to quit.`,
-  });
-}
-
-/**
- * Create LLM client from environment variables.
- */
-function createLLMClientFromEnv(providerName?: string): LLMClient {
-  const provider = providerName || process.env.LLM_PROVIDER || 'anthropic';
-
-  if (provider === 'ark') {
-    const apiKey = process.env.ARK_API_KEY;
-    if (!apiKey) {
-      throw new Error('ARK_API_KEY environment variable is required');
-    }
-
-    return createLLMClient({
-      provider: Provider.Ark,
-      apiKey,
-      baseURL: process.env.ARK_BASE_URL,
-      model: process.env.ARK_MODEL,
-    });
-  }
-
-  // Default to Anthropic
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error('ANTHROPIC_API_KEY environment variable is required');
-  }
-
-  return createLLMClient({
-    provider: Provider.Anthropic,
-    apiKey,
-    model: process.env.ANTHROPIC_MODEL,
+    sessionManager,
+    memory,
+    rl,
+    abort: () => abortController?.abort(),
   });
 }
 

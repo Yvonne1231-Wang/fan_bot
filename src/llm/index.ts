@@ -17,7 +17,7 @@ export const Provider = {
 /**
  * Type for LLM provider values.
  */
-export type ProviderType = typeof Provider[keyof typeof Provider];
+export type ProviderType = (typeof Provider)[keyof typeof Provider];
 
 // ─── Factory Function ───────────────────────────────────────────────────────
 
@@ -91,13 +91,61 @@ export function createLLMClient(options: CreateLLMClientOptions): LLMClient {
       });
 
     default:
-      throw new Error(`Unsupported provider: ${(options as { provider: string }).provider}`);
+      throw new Error(
+        `Unsupported provider: ${(options as { provider: string }).provider}`,
+      );
   }
+}
+
+/**
+ * Create an LLM client from environment variables.
+ *
+ * Reads configuration from:
+ * - LLM_PROVIDER: 'anthropic' (default) or 'ark'
+ * - ANTHROPIC_API_KEY, ANTHROPIC_MODEL: For Anthropic provider
+ * - ARK_API_KEY, ARK_BASE_URL, ARK_MODEL: For Ark provider
+ *
+ * @param providerOverride - Optional provider override
+ * @returns An LLMClient implementation
+ */
+export function createLLMClientFromEnv(providerOverride?: string): LLMClient {
+  const provider = providerOverride || process.env.LLM_PROVIDER || 'anthropic';
+
+  if (provider === 'ark') {
+    const apiKey = process.env.ARK_API_KEY;
+    if (!apiKey) {
+      throw new Error('ARK_API_KEY environment variable is required');
+    }
+
+    return createLLMClient({
+      provider: Provider.Ark,
+      apiKey,
+      baseURL: process.env.ARK_BASE_URL,
+      model: process.env.ARK_MODEL,
+    });
+  }
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY environment variable is required');
+  }
+
+  return createLLMClient({
+    provider: Provider.Anthropic,
+    apiKey,
+    model: process.env.ANTHROPIC_MODEL,
+  });
 }
 
 // ─── Re-exports ─────────────────────────────────────────────────────────────
 
-export type { LLMClient, Message, ContentBlock, ToolSchema, LLMResponse } from './types.js';
+export type {
+  LLMClient,
+  Message,
+  ContentBlock,
+  ToolSchema,
+  LLMResponse,
+} from './types.js';
 
 // ─── Smoke Test ─────────────────────────────────────────────────────────────
 
@@ -111,7 +159,9 @@ async function runSmokeTest(): Promise<void> {
   const arkModel = process.env.ARK_MODEL;
 
   if (!anthropicKey && !arkKey) {
-    console.log('No API keys found. Set ANTHROPIC_API_KEY or ARK_API_KEY to run smoke test.');
+    console.log(
+      'No API keys found. Set ANTHROPIC_API_KEY or ARK_API_KEY to run smoke test.',
+    );
     console.log('Skipping smoke test.');
     return;
   }
@@ -127,8 +177,18 @@ async function runSmokeTest(): Promise<void> {
       });
 
       const response = await client.chat(
-        [{ role: 'user', content: [{ type: 'text', text: 'Say "Hello from Anthropic" in 5 words or less.' }] }],
-        []
+        [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Say "Hello from Anthropic" in 5 words or less.',
+              },
+            ],
+          },
+        ],
+        [],
       );
 
       const textContent = response.content
@@ -139,11 +199,15 @@ async function runSmokeTest(): Promise<void> {
       console.log(`  Response: ${textContent}`);
       console.log(`  Stop reason: ${response.stop_reason}`);
       if (response.usage) {
-        console.log(`  Tokens: ${response.usage.input_tokens} in / ${response.usage.output_tokens} out`);
+        console.log(
+          `  Tokens: ${response.usage.input_tokens} in / ${response.usage.output_tokens} out`,
+        );
       }
       console.log('  Anthropic test: ✅\n');
     } catch (error) {
-      console.error(`  Anthropic test failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(
+        `  Anthropic test failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
       console.log('  Anthropic test: ❌\n');
     }
   }
@@ -160,8 +224,18 @@ async function runSmokeTest(): Promise<void> {
       });
 
       const response = await client.chat(
-        [{ role: 'user', content: [{ type: 'text', text: 'Say "Hello from Ark" in 5 words or less.' }] }],
-        []
+        [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Say "Hello from Ark" in 5 words or less.',
+              },
+            ],
+          },
+        ],
+        [],
       );
 
       const textContent = response.content
@@ -172,15 +246,21 @@ async function runSmokeTest(): Promise<void> {
       console.log(`  Response: ${textContent}`);
       console.log(`  Stop reason: ${response.stop_reason}`);
       if (response.usage) {
-        console.log(`  Tokens: ${response.usage.input_tokens} in / ${response.usage.output_tokens} out`);
+        console.log(
+          `  Tokens: ${response.usage.input_tokens} in / ${response.usage.output_tokens} out`,
+        );
       }
       console.log('  Ark test: ✅\n');
     } catch (error) {
-      console.error(`  Ark test failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(
+        `  Ark test failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
       console.log('  Ark test: ❌\n');
     }
   } else if (arkKey) {
-    console.log('Skipping Ark test: ARK_BASE_URL and ARK_MODEL must be set together with ARK_API_KEY.\n');
+    console.log(
+      'Skipping Ark test: ARK_BASE_URL and ARK_MODEL must be set together with ARK_API_KEY.\n',
+    );
   }
 
   console.log('Smoke test complete.');
@@ -189,7 +269,9 @@ async function runSmokeTest(): Promise<void> {
 // Run smoke test if this file is executed directly
 if (import.meta.url === `file://${process.argv[1]}`) {
   runSmokeTest().catch((error) => {
-    console.error(`Smoke test failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `Smoke test failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
     process.exit(1);
   });
 }

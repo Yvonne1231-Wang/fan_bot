@@ -2,6 +2,9 @@
 
 import type { Tool, ToolRegistry as IToolRegistry } from './types.js';
 import type { ToolSchema } from '../llm/types.js';
+import { createDebug } from '../utils/debug.js';
+
+const log = createDebug('tools:registry');
 
 // ─── Registry Implementation ────────────────────────────────────────────────
 
@@ -56,6 +59,28 @@ class Registry implements IToolRegistry {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Tool '${name}' failed: ${message}`);
     }
+  }
+
+  async dispatchWithConfirmation(
+    name: string,
+    input: Record<string, unknown>,
+    confirmFn?: (preview: string) => Promise<boolean>,
+  ): Promise<string> {
+    const tool = this.tools.get(name);
+    log.debug(
+      `dispatchWithConfirmation: ${name}, input: ${JSON.stringify(input)}, tool exists: ${!!tool}`,
+    );
+    if (!tool) {
+      throw new Error(`Tool '${name}' not found`);
+    }
+
+    if (tool.requiresConfirmation && confirmFn) {
+      const preview = `${name}(${JSON.stringify(input)})`;
+      const approved = await confirmFn(preview);
+      if (!approved) return 'Tool execution cancelled by user.';
+    }
+
+    return this.dispatch(name, input);
   }
 }
 

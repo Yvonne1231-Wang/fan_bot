@@ -1,6 +1,11 @@
 // ─── Transport Types ────────────────────────────────────────────────────────
 
-// ─── CLI Types ──────────────────────────────────────────────────────────────
+import type { SessionManager } from '../session/types.js';
+import type { MemoryService } from '../memory/types.js';
+
+// ─── CLI Types ─────────────────────────────────────────────────────────────
+
+import type { Interface } from 'readline';
 
 /**
  * CLI transport options.
@@ -14,6 +19,18 @@ export interface CLITransportOptions {
 
   /** Welcome message to display */
   welcomeMessage?: string;
+
+  /** Session manager for CLI commands (optional) */
+  sessionManager?: SessionManager;
+
+  /** Memory service for CLI commands (optional) */
+  memory?: MemoryService;
+
+  /** External readline interface to use (optional) */
+  rl?: Interface;
+
+  /** Abort callback for cancelling agent execution */
+  abort?: () => void;
 }
 
 // ─── HTTP Types ─────────────────────────────────────────────────────────────

@@ -1,1065 +1,961 @@
-# Coding Agent 改造计划
+# fan_bot 改造计划
 
-> Architecture Refactoring Roadmap · v1.0 · 2026 Q1
-
----
-
-## 目录
-
-1. [改造目标与原则](#0-改造目标与原则)
-2. [Phase 1：基础稳定性（W1–W4）](#phase-1基础稳定性w1w4)
-3. [Phase 2：能力扩展（W5–W8）](#phase-2能力扩展w5w8)
-4. [Phase 3：多 Agent 协作（W9–W12）](#phase-3多-agent-协作w9w12)
-5. [风险与缓解策略](#风险与缓解策略)
-6. [时间线总览](#时间线总览)
-7. [附录：关键接口速查](#附录关键接口速查)
+> 基于代码审查的针对性改造方案 · v1.0 · 2026 Q1
 
 ---
 
-## 执行规范（agent 必读）
+## 代码审查结论
 
-- 每次只处理一个 task，完成后等待确认再继续
-- 修改代码前先输出"计划：我将要做 X，影响文件 Y"
-- 完成后输出"完成：已修改 X，验收条件 [x] 已满足"
-- 遇到歧义不要自行决定，先提问
+**整体判断：基础很好，可以直接在上面加能力。**
+
+分层清晰（transport / agent / session / llm），接口设计干净，刻意不引入框架的决定是对的。
+下面列出的是实际读代码发现的问题，而不是通用建议。
+
+### 现存 Bug（需要先修）
+
+| # | 位置 | 问题 |
+|---|------|------|
+| B1 | `session/store.ts` | `load()` 里 `stats` 对象是假的，`birthtimeMs` 和 `mtimeMs` 永远是 `Date.now()`，不是真实文件时间 |
+| B2 | `index.ts` | `sessionManager.prune()` 存在但从未被调用，消息会无限增长直到超出 context window |
+| B3 | `utils/debug.ts` | `isEnabled(namespace)` 在模块加载时只运行一次，运行时改 `DEBUG` 环境变量无效 |
+
+### 缺失的核心能力
+
+1. **没有 system prompt**：LLM 不知道自己是谁、能做什么。`chat()` 调用没有传 system。
+2. **工具只有 calculator**：没有文件读写、没有搜索，实际没法完成任何真实任务。
+3. **HTTP transport 是空壳**：`startHTTP()` 只打了两行 log，不做任何事。
+4. **没有流式输出**：用户要等 LLM 生成完才能看到回复，体验差。
+5. **没有重试逻辑**：LLM API 一旦返回 429/5xx，直接崩。
+6. **CLI 没有 slash 命令**：无法查看历史 session、切换会话等。
 
 ---
 
-## 0. 改造目标与原则
-
-本计划面向初级 Coding Agent 的系统性升级改造，分 3 个阶段交付，合计约 **12 周**。目标是将一个能跑通基本 loop 的 MVP，改造为具备生产稳定性、安全隔离和多 agent 协作能力的工程级 agent 框架。
-
-### 核心原则
-
-| 原则 | 说明 |
-|------|------|
-| 最小破坏性 | 每阶段保持向后兼容，优先重构而非重写 |
-| 可观测优先 | 每个新特性都必须附带可量化的指标和日志 |
-| 安全边界前置 | 权限模型和沙箱在 Phase 1 就要建立，不能留到最后 |
-| 渐进式复杂度 | Phase 1 修 bug + 夯基础，Phase 2 加能力，Phase 3 扩展到多 agent |
-
-### 改造前后架构对比
+## 改造路线
 
 ```
-改造前                          改造后
-──────────────────────          ──────────────────────────────────────
-transport                       transport
-  └─ CLI / HTTP                   └─ CLI / HTTP
-
-agent core                      agent core
-  ├─ Agent loop                   ├─ Agent loop
-  ├─ Tool dispatcher              ├─ Planner          ← 新增
-  └─ Context mgr                  ├─ Dispatcher
-                                  └─ Context mgr      ← 重构
-
-session（串在主流程）            peer dependencies   ← 重新定位
-  ├─ Session store                ├─ Session store
-  └─ Session manager              ├─ Memory / RAG     ← 新增
-                                  └─ Tool Registry    ← 新增
-
-llm adapter（不变）             llm adapter
-  ├─ Anthropic                    ├─ Anthropic
-  ├─ Ark / OpenAI                 ├─ Ark / OpenAI
-  └─ LLMClient                    └─ LLMClient
+Phase 1（W1–W2）：修 bug + 让 agent 真正能用
+Phase 2（W3–W4）：加实用工具 + 流式输出 + 错误恢复
+Phase 3（W5–W8）：Memory / RAG + Planner + Tool 权限体系
 ```
 
 ---
 
-## Phase 1：基础稳定性（W1–W4）
+## Phase 1：让 agent 真正能用（W1–W2）
 
-修复已知的 critical bug，建立可观测性基础，完成上下文管理和工具权限的正确实现。**这一阶段完成后，agent 应该能稳定跑长对话且不会悄悄丢数据。**
+**目标**：修掉现有 bug，补上最基础的缺失能力，让 agent 能做真实的事。
 
 ---
 
-### 1.1 修复 Compaction 失效 bug（P0）
+### 1.1 修复 JSONLStore 的假 stats（B1）
 
-**Bug 描述**
-
-`maybeCompactContext` 返回的 `newMessages` 从未写回 `context.messages`，导致压缩实际上是空跑。下一轮循环仍然使用原始未压缩的消息列表，长对话必然 token 溢出后崩溃。
-
-**根本原因定位**
+**问题位置**：`src/session/store.ts` 第 80–83 行
 
 ```ts
-// loop.ts ~line 194  —— 当前错误实现
-const { didCompact, newMessages } = await maybeCompactContext(context, { ... });
-
-if (didCompact) {
-  // 只发了事件通知，newMessages 从未被应用
-  await emitCompactionEvent(context, options, loopHooks, {
-    currentMessages: context.messages,
-    newMessages,   // ← 传进去了，但 context.messages 没变
-    ...
-  });
-  continue;       // 下一轮还是读原始 context.messages
-}
+// 当前：读了两次文件，stats 是假的
+const stats = await readFile(filePath).then(() => ({
+  birthtimeMs: Date.now(),   // ← 永远是当前时间，不是文件时间
+  mtimeMs: Date.now()
+}));
 ```
 
-**修复方案**
+**修复方案**：
 
 ```ts
-if (didCompact && newMessages) {
-  context.messages = newMessages;   // ← 补上这一行
-  await emitCompactionEvent(context, options, loopHooks, {
-    currentMessages: context.messages,
-    newMessages,
-    trigger: 'pre-loop',
-    ...
-  });
-  continue;
-}
-```
-
-同理，`finishReason === 'length'` 触发的强制压缩分支需要同样修复。
-
-**验收条件**
-
-- [ ] 单测：模拟 context 超过 `COMPACT_TRIGGER` 阈值，断言 `context.messages.length` 在压缩后减小
-- [ ] 集成测试：连续 50 轮对话不崩溃，token 使用量平稳不增长
-- [ ] 压缩前后消息数量差异记录到 Observability 日志
-
----
-
-### 1.2 修复 stop + 空 text 的潜在无限循环（P0）
-
-**Bug 描述**
-
-`MAX_STEPS` 只在 `finishReason === 'tool-calls'` 分支检查。如果 LLM 返回 `stop` 但 `text` 为空，会无限 `continue` 而没有任何终止保护。
-
-**修复方案**
-
-```ts
-// 在 while(true) 顶部增加全局步数检查（覆盖所有 finishReason）
-if (totalSteps >= MAX_STEPS) {
-  return `Max steps (${MAX_STEPS}) reached, task may be incomplete.`;
-}
-
-// stop + 空 text 分支增加独立计数器
-let emptyStopCount = 0;
-const MAX_EMPTY_STOP = 3;
-
-if (finishReason === 'stop' && !text) {
-  emptyStopCount++;
-  if (emptyStopCount >= MAX_EMPTY_STOP) {
-    return 'Loop terminated: repeated empty stop response.';
-  }
-  continue;
-}
-```
-
-**验收条件**
-
-- [ ] 单测：mock LLM 持续返回 `{ finishReason: 'stop', text: '' }`，断言循环在 `MAX_EMPTY_STOP` 次后退出
-- [ ] 全局 `MAX_STEPS` 检查覆盖所有 `finishReason` 分支
-
----
-
-### 1.3 Context 类重构
-
-将 `Context` 从纯数据对象升级为有行为的类，让压缩逻辑内聚，同步消灭 `loop.ts` 和 `context/index.ts` 中重复的 `estimateTokens` 实现。
-
-**新接口设计**
-
-```ts
-interface IContext {
-  readonly sessionId: string;
-  readonly messages: ReadonlyArray<ModelMessage>;
-
-  // 追加消息（替代直接 push）
-  append(message: ModelMessage): void;
-
-  // 执行压缩并原地更新 messages（修复 1.1 的根本解法）
-  compact(opts?: CompactOptions): Promise<CompactResult>;
-
-  // 统一的 token 估算（消除重复实现）
-  estimateTokens(): number;
-
-  // 快照 / 恢复（Phase 2 Plan Mode 沙盒执行需要）
-  snapshot(): ContextSnapshot;
-  restore(snapshot: ContextSnapshot): void;
-}
-```
-
-**重构要点**
-
-- `context.messages` 改为只读，外部只能通过 `context.append()` 追加
-- `compact()` 方法内部调用 `maybeCompactContext` 并自动写回，`loop.ts` 不再关心写回逻辑
-- 删除 `loop.ts` 中的 `estimateMessageTokens`，统一使用 `context.estimateTokens()`
-
-**验收条件**
-
-- [ ] `estimateTokens` 只有一处实现
-- [ ] 现有所有测试通过（接口兼容）
-- [ ] `loop.ts` 不再直接赋值 `context.messages`
-
----
-
-### 1.4 Tool Registry 建立
-
-把工具的注册、权限声明、metadata 从 `Dispatcher` 剥离，建立独立的 `ToolRegistry`。Dispatcher 只负责"拿到工具定义并执行"，权限判断由 Registry 完成。
-
-**ToolDefinition 扩展**
-
-```ts
-interface ToolDefinition<I = any, O = any> {
-  // 原有字段
-  name: string;
-  description: string;
-  inputSchema: ZodSchema<I>;
-  execute: (input: I, ctx: ExecutionContext) => Promise<O>;
-
-  // 新增：权限与风险声明
-  scope: 'global' | 'restricted' | 'agent-only';
-  //   global      → 任何 agent 都可以使用
-  //   restricted  → 只有主 agent 可以使用
-  //   agent-only  → 只能被特定子 agent 使用
-
-  riskLevel: 'low' | 'medium' | 'high';
-  requiresConfirmation?: boolean;  // 高风险工具执行前需要用户确认
-  allowedRoles?: string[];         // 角色白名单（空 = 全部角色）
-  defer_loading?: boolean;
-}
-```
-
-**ToolRegistry 接口**
-
-```ts
-class ToolRegistry {
-  register(tool: ToolDefinition): void;
-
-  // 按角色解析工具，null 表示无权限
-  resolve(name: string, agentRole?: string): ToolDefinition | null;
-
-  getByScope(scope: ToolDefinition['scope']): ToolDefinition[];
-  getByRisk(level: ToolDefinition['riskLevel']): ToolDefinition[];
-  list(): ToolDefinition[];
-}
-```
-
-**内置工具权限声明**
-
-| 工具 | scope | riskLevel | requiresConfirmation |
-|------|-------|-----------|----------------------|
-| `read` | global | low | false |
-| `grep` | global | low | false |
-| `ls` | global | low | false |
-| `tavily` | global | low | false |
-| `write` | restricted | medium | false |
-| `edit` | restricted | medium | false |
-| `bash` | restricted | high | **true** |
-
-**验收条件**
-
-- [ ] `bash` 工具注册时声明 `scope: 'restricted'`，子 agent 调用返回权限错误
-- [ ] `ToolRegistry` 单测：resolve 正确过滤不在 `allowedRoles` 的角色
-- [ ] 现有工具注册迁移到 Registry，不改变对外行为
-
----
-
-### 1.5 Observability 基础层
-
-每次 LLM 调用、工具执行都需要可追踪的结构化记录，不能靠 `console.log` 打散文字。
-
-**事件类型定义**
-
-```ts
-type ObservabilityEvent =
-  | {
-      type: 'llm_call';
-      traceId: string;
-      model: string;
-      promptTokens: number;
-      completionTokens: number;
-      latencyMs: number;
-      firstChunkMs?: number;   // TTFT
-      finishReason: string;
-    }
-  | {
-      type: 'tool_call';
-      traceId: string;
-      toolName: string;
-      durationMs: number;
-      success: boolean;
-      error?: string;
-      outputLength: number;
-    }
-  | {
-      type: 'compaction';
-      traceId: string;
-      beforeMessages: number;
-      afterMessages: number;
-      beforeTokens: number;
-      afterTokens: number;
-      strategy: string;
-    };
-```
-
-**Observer 接口**
-
-```ts
-interface IObserver {
-  emit(event: ObservabilityEvent): void;
-  info(message: string, meta?: Record<string, unknown>): void;
-  warn(message: string, meta?: Record<string, unknown>): void;
-  error(message: string, err?: Error): void;
-}
-```
-
-**实现策略**
-
-- 在 `afterLLMCall` hook 中汇总 timing 数据
-- `Dispatcher` 的 `afterToolCall` 统一发 span 事件
-- 默认实现：异步写 JSONL 文件到 `~/.pulse-coder/traces/`
-- 生产环境：换 OpenTelemetry exporter，接口不变
-
-**验收条件**
-
-- [ ] JSONL 日志包含所有关键指标，字段不缺失
-- [ ] 单次对话结束后可以从日志中还原完整的 LLM 调用链
-- [ ] 日志写入不影响主流程性能（异步写）
-
----
-
-### 1.6 onToolCall hook 改为可 await（P1）
-
-当前实现是 fire-and-forget，错误被静默吞掉，与 `beforeToolCall` / `afterToolCall` 的同步语义完全不一致。
-
-```ts
-// 当前（错误）—— 错误静默丢弃
-Promise.resolve(hook({ context, toolCall: chunk })).catch(() => undefined);
-
-// 修复后 —— 顺序 await，错误可被观测
-for (const hook of toolCallHooks) {
-  try {
-    await hook({ context, toolCall: chunk });
-  } catch (err) {
-    observer.warn('onToolCall hook failed', { err });
-    // 不中断主流程，但错误会被记录
-  }
-}
-```
-
-**验收条件**
-
-- [ ] `onToolCall` hook 中抛出的错误可以在 Observability 日志中看到
-- [ ] 现有使用 `onToolCall` 的插件行为不变
-
----
-
-### Phase 1 交付物汇总
-
-| 交付物 | 类型 | 验收标准 |
-|--------|------|---------|
-| Compaction bug fix + 单测 | bug fix | 50 轮对话无 token 溢出 |
-| 无限循环保护 | bug fix | MAX_STEPS 全局生效 |
-| Context 类重构 | 重构 | estimateTokens 只有一处实现 |
-| ToolRegistry v1 | 新增 | bash 工具按 scope 隔离 |
-| ObservabilityLayer v1 | 新增 | JSONL 日志包含所有关键指标 |
-| onToolCall 同步化 | bug fix | hook 错误可被观测 |
-
----
-
-## Phase 2：能力扩展（W5–W8）
-
-在稳定基础上加入 Plan Mode 的硬隔离、SubAgent 工具白名单、Memory 层和 Human-in-the-loop。
-
----
-
-### 2.1 Plan Mode 硬隔离
-
-当前 Plan Mode 是 prompt-constrained，只靠 system prompt 告诉 LLM 不要调用写操作工具。**改为在 Dispatcher 层做硬拦截。**
-
-**两种模式的工具权限对比**
-
-| 工具类别 | Planning 模式 | Executing 模式 |
-|---------|--------------|----------------|
-| `read`, `grep`, `ls`, `search` | 允许 | 允许 |
-| `bash`（只读命令） | 条件允许 | 允许 |
-| `write`, `edit` | **硬拦截** | 允许 |
-| `bash`（写/执行操作） | **硬拦截** | 允许（高风险需确认） |
-
-**实现：Dispatcher 的 beforeToolCall hook**
-
-```ts
-if (planModeService.getMode() === 'planning') {
-  const toolDef = registry.resolve(toolName, agentRole);
-
-  if (!toolDef || toolDef.scope !== 'global') {
-    throw new PlanModeViolationError(
-      `Tool '${toolName}' is not allowed in planning mode. ` +
-      `Switch to executing mode first.`
-    );
-  }
-}
-```
-
-- 错误信息返回给 LLM（作为 tool-result），LLM 可以选择切换模式重试
-- Violation 事件同步记录到 Observability
-
-**验收条件**
-
-- [ ] Planning 模式下调用 `bash` 返回 `PlanModeViolationError`
-- [ ] LLM 收到错误后能正确切换模式，而非死循环
-- [ ] Violation 事件记录到 Observability
-
----
-
-### 2.2 SubAgent 工具隔离
-
-子 agent 当前继承父 agent 的全部工具。改造为子 agent 在定义文件中声明所需工具列表，由 `ToolRegistry` 按 `allowedRoles` 过滤。
-
-**子 agent 定义文件扩展（Markdown frontmatter）**
-
-```markdown
----
-name: code-reviewer
-description: 专用代码审查助手
-allowedTools:
-  - read
-  - grep
-  - ls
-# 不声明 = 只有 read 权限（最小权限原则）
----
-
-You are a code reviewer...
-```
-
-**SubAgentPlugin 初始化时的工具过滤**
-
-```ts
-const allowedTools = config.allowedTools ?? ['read'];
-
-const tools = Object.fromEntries(
-  allowedTools
-    .map(name => [name, registry.resolve(name, config.name)])
-    .filter(([, def]) => def !== null)  // null = 无权限，过滤掉
-);
-
-const result = await loop(subContext, {
-  tools,          // ← 已经过滤过的工具集
-  systemPrompt: config.systemPrompt,
-});
-```
-
-**预设角色工具权限**
-
-| 角色 | 允许工具 | 说明 |
-|------|---------|------|
-| researcher | read, grep, ls, tavily | 只读，用于分析和检索 |
-| coder | read, write, edit, grep | 可以修改代码，不能执行 |
-| executor | read, bash | 可以执行命令，谨慎授权 |
-| reviewer | read, grep, ls | 只读，用于审查 |
-| documenter | read, write（仅 `.md`） | 限制写权限只到文档文件 |
-
-**验收条件**
-
-- [ ] `code-reviewer` 子 agent 调用 `bash` 时返回权限错误
-- [ ] 未声明 `allowedTools` 的子 agent 只能使用 `read`
-- [ ] 父 agent 不受子 agent 工具限制影响
-
----
-
-### 2.3 Memory / RAG 层
-
-Session store 只负责当前对话持久化。**跨会话的长期信息需要独立的 Memory 层。**
-
-#### 三级记忆架构
-
-```
-┌─────────────────────────────────────────────────────┐
-│  短期记忆（in-session）                               │
-│  context.messages，随会话结束而清空                   │
-│  压缩前做摘要注入到下一轮                              │
-├─────────────────────────────────────────────────────┤
-│  工作记忆（cross-session facts）                     │
-│  SQLite JSON1，存放明确的事实和结论                   │
-│  例："项目使用 pnpm workspace""测试命令是 pnpm test"  │
-├─────────────────────────────────────────────────────┤
-│  长期记忆（semantic）                                 │
-│  向量数据库，存放文档块、代码片段                      │
-│  支持语义检索，hybrid search（BM25 + ANN）            │
-└─────────────────────────────────────────────────────┘
-```
-
-#### 技术选型
-
-| 组件 | 推荐方案 | 备选 |
-|------|---------|------|
-| 向量存储 | LanceDB（嵌入式，零依赖） | Chroma, Qdrant |
-| Embedding | text-embedding-3-small | nomic-embed（本地） |
-| 检索策略 | BM25 + ANN hybrid search | 纯向量检索 |
-| 事实存储 | SQLite JSON1 | Redis |
-
-#### Memory 接口设计
-
-```ts
-interface MemoryService {
-  // 工作记忆：结构化事实
-  setFact(key: string, value: string, sessionId?: string): Promise<void>;
-  getFact(key: string): Promise<string | null>;
-  listFacts(prefix?: string): Promise<Array<{ key: string; value: string }>>;
-
-  // 语义记忆：向量检索
-  upsert(id: string, content: string, metadata?: Record<string, unknown>): Promise<void>;
-  search(query: string, topK?: number, threshold?: number): Promise<MemoryChunk[]>;
-  delete(id: string): Promise<void>;
-
-  // 构建注入 prompt（供 beforeLLMCall hook 调用）
-  buildContext(query: string): Promise<string | null>;
-}
-
-interface MemoryChunk {
-  id: string;
-  content: string;
-  score: number;        // 相关度 0–1，低于 0.70 不注入
-  metadata?: Record<string, unknown>;
-}
-```
-
-#### Memory 写入时机
-
-| 时机 | 触发条件 | 写入目标 |
-|------|---------|---------|
-| `afterRun` hook | 每次对话结束 | 让 LLM 萃取关键事实 → 工作记忆 |
-| `afterToolCall` | bash/read 输出 > 500 字 | 摘要写入语义记忆 |
-| 用户显式触发 | `/remember <内容>` | 直接写入工作记忆 |
-| 用户显式删除 | `/forget <key>` | 删除指定事实 |
-
-#### Memory 读取（beforeLLMCall hook）
-
-```ts
-const memoryContext = await memoryService.buildContext(lastUserMessage);
-
-if (memoryContext) {
-  // 注入格式：
-  // [MEMORY]
-  // - 用户倾向使用 TypeScript strict 模式
-  // - 项目根目录：/workspace/aurora
-  // [/MEMORY]
-  systemPrompt = appendToSystemPrompt(systemPrompt, memoryContext);
-}
-```
-
-**相关度阈值**：检索结果低于 `0.70` 的不注入，避免引入无关噪声。
-
-**验收条件**
-
-- [ ] `/remember` 命令写入工作记忆，下次会话可以查询到
-- [ ] 代码库文件索引后，语义检索 "auth 相关代码" 返回正确文件
-- [ ] 低相关度（< 0.70）的内容不注入 system prompt
-- [ ] Memory 读写不引入超过 200ms 的延迟
-
----
-
-### 2.4 Human-in-the-loop
-
-高风险工具执行前需要人工确认，不能让 agent 默默运行可能不可逆的操作。
-
-#### 触发条件
-
-```ts
-// Dispatcher beforeToolCall hook
-const needsConfirmation =
-  toolDef.requiresConfirmation ||      // 工具声明需要确认
-  (toolDef.riskLevel === 'high') ||    // 高风险工具
-  consecutiveWriteCount >= 3;          // 连续 3 次以上写操作
-```
-
-#### 确认请求数据结构
-
-```ts
-interface ConfirmationRequest {
-  toolName: string;
-  riskLevel: 'low' | 'medium' | 'high';
-  preview: string;    // 人类可读的操作预览（bash 显示命令，write 显示路径+内容摘要）
-  timeout: number;    // 超时后默认拒绝（毫秒）
-}
-```
-
-#### 各 transport 层实现
-
-**CLI：**
-```
-[确认] 即将执行高风险操作
-工具：bash
-命令：rm -rf ./dist && npm run build
-风险：high
-
-是否继续？[y/N] _
-```
-
-**HTTP：**
-```
-SSE 事件: { type: 'confirmation_required', requestId, preview }
-  ↓ 前端展示确认对话框
-POST /confirm { requestId, approved: true/false }
-  ↓ 恢复 loop 执行
-```
-
-**验收条件**
-
-- [ ] `bash` 工具每次执行前触发确认流程
-- [ ] CLI 模式下超时 30s 未确认，默认拒绝并返回错误给 LLM
-- [ ] HTTP 模式下前端可以通过 webhook 回调确认
-
----
-
-### 2.5 Session 层重新定位
-
-Session 从主流程的中间层，改为 agent core 按需读写的 peer 依赖。
-
-**改造要点**
-
-- Session 只在 `beforeRun` 加载历史消息、`afterRun` 保存新消息
-- `sessionId` 作为 `Context` 的字段，不再从外部串传
-- 新增 `SessionIndex`（SQLite）支持按关键词搜索历史会话
-- Session prune 策略：超过 N 条会话后，对最老的自动归档压缩
-
-```ts
-// Engine.run() 伪代码
-async run(userMessage: string, sessionId?: string): Promise<string> {
-  const session = await sessionStore.load(sessionId);
-  const context = new Context({ sessionId: session.id, messages: session.messages });
-  context.append({ role: 'user', content: userMessage });
-
-  const result = await loop(context, options);
-
-  await sessionStore.save(context.sessionId, context.messages);
-
-  return result;
-}
-```
-
-**验收条件**
-
-- [ ] Session 不再是 `loop()` 的参数
-- [ ] `/resume <sessionId>` 可以正确恢复历史对话
-- [ ] `/search "auth bug"` 返回相关历史会话列表
-
----
-
-### Phase 2 交付物汇总
-
-| 交付物 | 类型 | 验收标准 |
-|--------|------|---------|
-| Plan Mode 硬拦截 | 重构 | Planning 模式下调用 bash 返回明确错误 |
-| SubAgent 工具白名单 | 重构 | 子 agent 无法调用未声明工具 |
-| MemoryPlugin v1 | 新增 | 跨会话 facts 持久化 + 语义检索 |
-| Human-in-the-loop | 新增 | bash 写操作触发确认流程 |
-| Session 重构 | 重构 | Session 不再是主流程中间层 |
-
----
-
-## Phase 3：多 Agent 协作（W9–W12）
-
-在 Phase 2 的工具隔离基础上，引入 Planner 和 Multi-agent Orchestration，让复杂任务可以分解到专门的子 agent 并行处理。
-
----
-
-### 3.1 Planner 组件
-
-Planner 在 agent core 内部，负责把复杂任务分解为子目标列表，交给 loop 逐步执行。**简单任务绕过 Planner，复杂任务走 Planner。**
-
-#### 两种 Plan 模式
-
-**Sequential Plan**（线性步骤列表，适合大多数 coding 任务）
-
-```
-Goal: 给 Store 模型加 URL slug 功能
-
-Step 1: 分析现有 Store schema 和相关代码         [researcher]
-Step 2: 设计 slug 字段和唯一性约束               [coder]
-Step 3: 编写 Elixir migration                   [coder]
-Step 4: 更新 Store 的 changeset 函数             [coder]
-Step 5: 更新相关 GraphQL schema                  [coder]
-Step 6: 运行测试并修复失败用例                   [executor]
-```
-
-**DAG Plan**（有依赖的并行步骤，适合多模块同时开发）
-
-```
-Step 1: 分析需求                                [researcher]  deps: []
-  ├─ Step 2a: 修改后端 API                      [coder]       deps: [1]
-  ├─ Step 2b: 更新前端类型定义                   [coder]       deps: [1]
-  └─ Step 2c: 更新测试用例                       [coder]       deps: [1]
-Step 3: 集成测试                                [executor]    deps: [2a, 2b, 2c]
-Step 4: 更新文档                                [documenter]  deps: [3]
-```
-
-#### Plan 数据结构
-
-```ts
-interface Plan {
-  id: string;
-  goal: string;
-  mode: 'sequential' | 'dag';
-  steps: PlanStep[];
-  status: 'draft' | 'confirmed' | 'running' | 'done' | 'failed';
-  createdAt: number;
-}
-
-interface PlanStep {
-  id: string;
-  title: string;
-  description: string;
-  deps: string[];                    // 依赖的步骤 id（DAG 模式）
-  assignedRole?: AgentRole;
-  status: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
-  result?: string;
-  startedAt?: number;
-  endedAt?: number;
-}
-```
-
-#### Planner 触发判断
-
-```ts
-function shouldUsePlanner(message: string, context: IContext): boolean {
-  // 1. 用户显式使用 /plan 命令
-  if (message.startsWith('/plan')) return true;
-
-  // 2. 消息超过 300 字且包含多个动词
-  if (message.length > 300 && countVerbs(message) >= 3) return true;
-
-  // 3. 包含多步骤结构词
-  const multiStepPatterns = [/先.*再.*最后/, /同时/, /分步骤/, /step by step/i];
-  if (multiStepPatterns.some(p => p.test(message))) return true;
-
-  // 4. 历史对话显示任务未完成（工具调用 > 5 次但没有 final answer）
-  if (context.messages.length > 10 && isTaskIncomplete(context)) return true;
-
-  return false;
-}
-```
-
-#### Human-in-the-loop for Plan
-
-Planner 生成计划后，默认先展示给用户确认：
-
-```
-[Planner] 已生成执行计划，共 6 步：
-
-  Step 1: 分析现有 Store schema（researcher）
-  Step 2: 设计 slug 字段（coder）
-  Step 3: 编写 migration（coder）
-  Step 4: 更新 changeset（coder）
-  Step 5: 更新 GraphQL schema（coder）
-  Step 6: 运行测试（executor）
-
-是否开始执行？[y/N/edit] _
-```
-
-**验收条件**
-
-- [ ] `/plan` 命令触发 Planner，生成可读的步骤列表
-- [ ] 自动识别复杂任务（> 300 字 + 多动词）触发 Planner
-- [ ] Plan 确认后才开始执行，不自动 auto-run
-- [ ] Plan 执行进度实时显示（当前步骤 / 总步骤）
-
----
-
-### 3.2 Multi-agent Orchestration
-
-主 agent（Orchestrator）持有 Planner 生成的计划，把每个步骤分发给对应的专门子 agent，收集结果后聚合。
-
-#### Orchestrator 执行流程
-
-```
-用户确认 Plan
-  │
-  ▼
-Orchestrator 持有 Plan
-  │
-  ├─► 找出所有 deps 已满足的 ready 步骤
-  │
-  ├─► 按 maxConcurrency 并发启动子 agent
-  │     ├─ researcher → 工具集 [read, grep, ls, tavily]
-  │     ├─ coder      → 工具集 [read, write, edit, grep]
-  │     └─ executor   → 工具集 [read, bash]
-  │
-  ├─► 步骤完成 → 结果写入 Plan.step.result
-  │             → 结果写入 Memory（供后序步骤参考）
-  │
-  └─► 所有步骤完成 → Orchestrator 做最终聚合回复
-```
-
-#### 并发调度实现
-
-```ts
-async function runPlan(plan: Plan, opts: OrchestratorOptions): Promise<string> {
-  const { maxConcurrency = 3, nodeTimeoutMs = 10 * 60 * 1000 } = opts;
-
-  while (plan.hasIncompleteSteps()) {
-    // 找出所有可以执行的步骤（deps 全部完成）
-    const ready = plan.steps.filter(s =>
-      s.status === 'pending' &&
-      s.deps.every(d => plan.getStep(d)?.status === 'done')
-    );
-
-    if (ready.length === 0) {
-      throw new OrchestratorError('No ready steps: possible dep cycle or upstream failure');
-    }
-
-    await Promise.all(
-      ready.slice(0, maxConcurrency).map(step => runStep(step, opts))
-    );
-  }
-
-  return aggregateResults(plan);
-}
-```
-
-#### 预设 Agent 角色
-
-| 角色 | 工具权限 | 典型任务 |
-|------|---------|---------|
-| researcher | read, grep, ls, tavily | 代码库分析、文档检索、需求理解 |
-| coder | read, write, edit, grep | 代码生成、重构、修改 |
-| executor | read, bash | 运行测试、构建、执行命令 |
-| reviewer | read, grep, ls | 代码审查、质量检查 |
-| documenter | read, write（仅 `.md`） | 文档生成、注释更新 |
-
-**验收条件**
-
-- [ ] Sequential Plan 按顺序执行，失败步骤阻断后续
-- [ ] DAG Plan 并发执行无依赖的步骤，`maxConcurrency` 生效
-- [ ] 子 agent 超时（`nodeTimeoutMs`）后标记步骤失败，不阻塞整个 Plan
-- [ ] 最终聚合结果包含每步骤的执行摘要
-
----
-
-### 3.3 Agent 间通信（通过 Memory）
-
-子 agent 之间不直接调用，而是通过**共享 Memory** 间接通信，避免紧耦合。
-
-**通信流程示例**
-
-```
-Step 1 (researcher) 执行完成
-  │
-  └─► 自动写入 Memory：
-        key: "step:1:result"
-        value: "Store schema 在 lib/aurora/catalog/store.ex，
-                目前没有 slug 字段，有 name 和 domain_name"
-
-Step 3 (coder) 开始执行
-  │
-  └─► beforeLLMCall hook 检索 Memory
-        query: "Store schema 结构"
-        → 找到 Step 1 的结果，注入到 system prompt
-        → coder 知道当前 schema 结构，直接写 migration
-```
-
-**Memory 写入规范**
-
-```ts
-// 步骤完成后（afterRun hook，子 agent 级别）
-await memoryService.setFact(`step:${stepId}:result`, result);
-await memoryService.setFact(`step:${stepId}:files_changed`, changedFiles.join(','));
-
-// 语义记忆（可被后续步骤模糊检索）
-await memoryService.upsert(`step-${stepId}`, result, {
-  stepTitle: step.title,
-  role: step.assignedRole,
-  planId: plan.id,         // planId 隔离，避免跨 Plan 污染
-});
-```
-
-**验收条件**
-
-- [ ] Step 2 的 coder 能检索到 Step 1 researcher 写入的 Memory
-- [ ] 同一个 Plan 内的 Memory 条目有 planId 隔离
-- [ ] 跨 Plan 的长期 Memory 仍然可以被检索到
-
----
-
-### 3.4 Observability 升级：Trace Tree
-
-Phase 3 引入多 agent 后，单一 `requestId` 不够用，需要完整的调用链追踪。
-
-#### Span 模型
-
-```
-Trace: plan-abc123
-  │
-  ├─ Span: orchestrator             latency: 12.3s
-  │   ├─ Span: step-1-researcher    latency: 3.1s
-  │   │   ├─ Span: llm_call         tokens: 1,200
-  │   │   └─ Span: tool:read        duration: 45ms
-  │   │
-  │   ├─ Span: step-2a-coder        latency: 4.2s  (并发)
-  │   │   ├─ Span: llm_call         tokens: 2,100
-  │   │   └─ Span: tool:write       duration: 12ms
-  │   │
-  │   └─ Span: step-3-executor      latency: 5.0s
-  │       ├─ Span: llm_call         tokens: 800
-  │       └─ Span: tool:bash        duration: 3.2s
-  │
-  └─ Span: aggregation              latency: 0.8s
-```
-
-#### 实现要点
-
-```ts
-interface SpanContext {
-  traceId: string;         // Plan 级别，整个 Plan 共享
-  spanId: string;          // 每个 agent/步骤独立生成
-  parentSpanId?: string;   // 子 agent 继承父 spanId
-}
-
-// 子 agent 创建时
-const subSpan: SpanContext = {
-  traceId: parentSpan.traceId,      // 继承
-  spanId: generateSpanId(),         // 新生成
-  parentSpanId: parentSpan.spanId,  // 指向父
+import { stat } from 'fs/promises';
+
+// 修复后：用 stat() 拿真实文件时间
+const [, fileStats] = await Promise.all([
+  readFile(filePath, 'utf-8'),
+  stat(filePath),
+]);
+
+return {
+  meta: {
+    id,
+    createdAt: fileStats.birthtimeMs,
+    updatedAt: fileStats.mtimeMs,
+    messageCount: messages.length,
+  },
+  messages,
 };
 ```
 
-**Cost Tracking**：记录每个步骤的 token 消耗，支持按 Plan 汇总
+**验收条件**：
 
-```
-Plan cost summary:
-  Step 1 (researcher):  1,200 tokens  $0.002
-  Step 2a (coder):      2,100 tokens  $0.004
-  Step 2b (coder):      1,800 tokens  $0.003
-  Step 3 (executor):      800 tokens  $0.001
-  ─────────────────────────────────────────
-  Total:                5,900 tokens  $0.010
-```
-
-**输出格式**：兼容 Jaeger JSON，写到 `~/.pulse-coder/traces/<traceId>.json`
-
-**验收条件**
-
-- [ ] 多 agent 调用链可以通过 traceId 完整还原
-- [ ] 每个 Plan 执行结束后输出 cost summary
-- [ ] Trace JSON 格式可以导入 Jaeger 可视化
+- [ ] `session.meta.updatedAt` 与文件系统的修改时间一致
+- [ ] `list()` 返回的会话按真实修改时间排序
 
 ---
 
-### Phase 3 交付物汇总
+### 1.2 在每次对话后调用 prune()（B2）
 
-| 交付物 | 类型 | 验收标准 |
-|--------|------|---------|
-| Planner v1 | 新增 | 自动分解复杂任务为 Plan，用户确认后执行 |
-| Orchestrator | 新增 | 并发执行 DAG 步骤，maxConcurrency 生效 |
-| Agent 角色体系 | 新增 | 5 种预设角色，工具按角色隔离 |
-| Memory 跨 agent 共享 | 扩展 | 后序 agent 能检索前序步骤结果 |
-| Trace tree | 新增 | multi-agent 调用链可追踪，支持 cost summary |
-
----
-
-## 风险与缓解策略
-
-| 风险 | 概率 | 影响 | 缓解措施 |
-|------|------|------|---------|
-| Memory 检索引入无关内容，干扰 LLM 输出 | 中 | 高 | 检索结果加相关度阈值（0.70）过滤 |
-| Planner 分解任务出错，步骤依赖不合理 | 中 | 中 | Planner 先 dry-run，用户确认 Plan 再执行 |
-| 子 agent 并发写同一文件导致冲突 | 低 | 高 | 文件级写锁，同一文件只允许一个 agent 持有写权限 |
-| Phase 1 重构破坏现有 CLI 行为 | 低 | 中 | 每个 PR 前跑完整 E2E test suite |
-| LLM API 并发调用超出 rate limit | 中 | 低 | Orchestrator 统一限流，指数退避已有实现 |
-| Planner 生成 Plan 消耗大量 token | 低 | 低 | Plan 生成使用较小模型，执行用大模型 |
-
----
-
-## 时间线总览
-
-| 周次 | 阶段 | 主要交付 |
-|------|------|---------|
-| W1–W2 | Phase 1 | Compaction bug fix · Context 类重构 · ToolRegistry v1 |
-| W3–W4 | Phase 1 | ObservabilityLayer · onToolCall 同步化 · Phase 1 E2E 测试 |
-| W5–W6 | Phase 2 | Plan Mode 硬拦截 · SubAgent 工具白名单 · Session 重构 |
-| W7–W8 | Phase 2 | MemoryPlugin v1 · Human-in-the-loop · Phase 2 集成测试 |
-| W9–W10 | Phase 3 | Planner v1 · Orchestrator · Agent 角色体系 |
-| W11–W12 | Phase 3 | Memory 跨 agent 共享 · Trace tree · 全链路测试 |
-
----
-
-## 附录：关键接口速查
-
-### Context 接口
+**问题位置**：`src/index.ts` 的 `handler` 函数
 
 ```ts
-interface IContext {
-  readonly sessionId: string;
-  readonly messages: ReadonlyArray<ModelMessage>;
-  append(message: ModelMessage): void;
-  compact(opts?: CompactOptions): Promise<CompactResult>;
-  estimateTokens(): number;
-  snapshot(): ContextSnapshot;
-  restore(snapshot: ContextSnapshot): void;
+// 当前：save 前没有 prune
+await sessionManager.save(sid, result.messages);
+```
+
+**修复方案**：
+
+```ts
+// 修复后：save 前先 prune
+const pruned = sessionManager.prune(result.messages);
+await sessionManager.save(sid, pruned);
+```
+
+同时补上被 prune 时的日志提示：
+
+```ts
+// session/manager.ts prune() 方法中
+if (messages.length > this.maxContextMessages) {
+  const dropped = messages.length - this.maxContextMessages;
+  console.log(`[session] Context pruned: dropped ${dropped} oldest messages`);
 }
 ```
 
-### ToolDefinition 接口
+**验收条件**：
+
+- [ ] 超过 40 条消息的会话，加载时自动剪裁
+- [ ] prune 时打印日志，用户知道发生了什么
+
+---
+
+### 1.3 修复 debug logger 的静态 isEnabled（B3）
+
+**问题位置**：`src/utils/debug.ts`
 
 ```ts
-interface ToolDefinition<I = any, O = any> {
-  name: string;
-  description: string;
-  inputSchema: ZodSchema<I>;
-  execute: (input: I, ctx: ExecutionContext) => Promise<O>;
-  scope: 'global' | 'restricted' | 'agent-only';
-  riskLevel: 'low' | 'medium' | 'high';
-  requiresConfirmation?: boolean;
-  allowedRoles?: string[];
-  defer_loading?: boolean;
+// 当前：模块加载时只判断一次
+export function createDebug(namespace: string): DebugLogger {
+  const enabled = isEnabled(namespace);  // ← 这里固定了
+  ...
 }
 ```
 
-### MemoryService 接口
+**修复方案**：
 
 ```ts
-interface MemoryService {
-  setFact(key: string, value: string, sessionId?: string): Promise<void>;
+// 修复后：每次 log 时动态判断
+function isEnabledNow(namespace: string): boolean {
+  const debugEnv = process.env.DEBUG || '';
+  if (!debugEnv) return false;
+  // ... 同原有逻辑
+}
+
+// log() 内部改为
+function log(level: LogLevel, message: string, ...args: unknown[]): void {
+  if (!isEnabledNow(namespace)) return;  // ← 每次调用时判断
+  // ...
+}
+```
+
+**验收条件**：
+
+- [ ] 运行中执行 `export DEBUG=agent:loop` 后，日志立即生效
+
+---
+
+### 1.4 给 LLM 加 system prompt
+
+**问题**：`LLMClient.chat()` 接口和 `anthropic.ts`、`openai.ts` 实现都没有 system prompt 参数，agent 没有任何角色定义。
+
+**修改 `src/llm/types.ts`**：
+
+```ts
+export interface LLMClient {
+  chat(
+    messages: Message[],
+    tools?: ToolSchema[],
+    systemPrompt?: string,   // ← 新增可选参数
+  ): Promise<LLMResponse>;
+}
+```
+
+**修改 `src/llm/anthropic.ts`**（实现层）：
+
+```ts
+async chat(
+  messages: Message[],
+  tools: ToolSchema[] = [],
+  systemPrompt?: string,
+): Promise<LLMResponse> {
+  const response = await this.client.messages.create({
+    model: this.model,
+    max_tokens: 8096,
+    system: systemPrompt,   // ← 传给 API
+    messages: toAnthropicMessages(messages),
+    tools: tools.length > 0 ? toAnthropicTools(tools) : undefined,
+  });
+  // ...
+}
+```
+
+**新建 `src/agent/prompt.ts`**（system prompt 管理）：
+
+```ts
+/**
+ * Build the system prompt for the agent.
+ * Keep it focused: who the agent is, what it can do, how it should behave.
+ */
+export function buildSystemPrompt(options: {
+  agentName?: string;
+  extraContext?: string;
+} = {}): string {
+  const { agentName = 'Assistant', extraContext } = options;
+
+  const base = `You are ${agentName}, a helpful AI assistant with access to tools.
+
+When given a task:
+1. Think through what needs to be done
+2. Use tools when they would help (don't use tools for things you can answer directly)
+3. Be concise and clear in your responses
+
+Available tools will be described separately. Always prefer completing tasks over asking clarifying questions unless the task is genuinely ambiguous.`;
+
+  return extraContext ? `${base}\n\n${extraContext}` : base;
+}
+```
+
+**在 `src/index.ts` 中传入 system prompt**：
+
+```ts
+const result = await runAgent({
+  prompt: input,
+  llmClient,
+  toolRegistry: registry,
+  initialMessages: messages,
+  maxIterations: 10,
+  systemPrompt: buildSystemPrompt({ agentName: 'fan_bot' }),  // ← 新增
+});
+```
+
+**验收条件**：
+
+- [ ] LLM 回复时有明确的角色定位，不会说"作为 AI 语言模型……"
+- [ ] system prompt 可以通过 `buildSystemPrompt` 参数定制
+
+---
+
+### 1.5 补充 CLI slash 命令
+
+当前 CLI 只能输入消息，没有任何管理命令。
+
+**在 `src/transport/cli.ts` 中加入 slash 命令处理**：
+
+```ts
+// 在 handler 调用前拦截 slash 命令
+if (input.startsWith('/')) {
+  await handleSlashCommand(input, { sessionManager, sid });
+  rl.prompt();
+  return;
+}
+```
+
+**支持的命令**：
+
+| 命令 | 功能 |
+|------|------|
+| `/help` | 显示可用命令列表 |
+| `/sessions` | 列出最近 10 个会话 |
+| `/new` | 开始新会话 |
+| `/clear` | 清空当前会话消息 |
+| `/status` | 显示当前会话信息（ID、消息数、token 估算） |
+| `/exit` | 退出（同 exit） |
+
+**验收条件**：
+
+- [ ] `/sessions` 显示会话列表，按时间倒序
+- [ ] `/status` 显示当前消息数量
+- [ ] 未知 `/xxx` 命令给出友好提示而非报错
+
+---
+
+### Phase 1 交付物
+
+| 交付物 | 验收标准 |
+|--------|---------|
+| B1 修复：真实文件时间 | `list()` 按真实时间排序 |
+| B2 修复：prune 被调用 | 50 轮对话不超出 context |
+| B3 修复：动态 debug 判断 | 运行时改 DEBUG 变量生效 |
+| System prompt 支持 | LLM 有明确角色定位 |
+| CLI slash 命令 | `/sessions` `/status` 可用 |
+
+---
+
+## Phase 2：实用工具 + 稳定性（W3–W4）
+
+**目标**：让 agent 能真正干活，加上流式输出和错误恢复。
+
+---
+
+### 2.1 补充实用工具
+
+只有 `calculator` 的 agent 什么都做不了。按实用性优先顺序补充：
+
+#### 文件工具（`src/tools/files.ts`）
+
+```ts
+export const readFileTool: Tool = {
+  schema: {
+    name: 'read_file',
+    description: 'Read the contents of a file',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path to read' },
+      },
+      required: ['path'],
+    },
+  },
+  handler: async ({ path }) => {
+    const { readFile } = await import('fs/promises');
+    const content = await readFile(String(path), 'utf-8');
+    // 截断过长输出，避免撑爆 context
+    if (content.length > 20000) {
+      return content.slice(0, 20000) + '\n\n[... truncated, file too large ...]';
+    }
+    return content;
+  },
+};
+
+export const writeFileTool: Tool = { /* 类似结构 */ };
+export const listDirTool: Tool = { /* ls 实现 */ };
+```
+
+#### Shell 工具（`src/tools/shell.ts`）
+
+```ts
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
+
+export const shellTool: Tool = {
+  schema: {
+    name: 'shell',
+    description: 'Run a shell command and return stdout + stderr',
+    input_schema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command to execute' },
+        timeout: { type: 'number', description: 'Timeout in ms (default: 30000)' },
+      },
+      required: ['command'],
+    },
+  },
+  handler: async ({ command, timeout = 30000 }) => {
+    try {
+      const { stdout, stderr } = await execAsync(String(command), {
+        timeout: Number(timeout),
+        maxBuffer: 1024 * 1024 * 5,  // 5MB
+      });
+      const output = [stdout, stderr].filter(Boolean).join('\n');
+      return output || '(no output)';
+    } catch (error: any) {
+      return `Exit ${error.code ?? 1}: ${error.stderr || error.message}`;
+    }
+  },
+};
+```
+
+#### Web 搜索工具（`src/tools/search.ts`，可选）
+
+```ts
+// 依赖 TAVILY_API_KEY 环境变量
+// 如果没有 key，工具注册时跳过，不影响其他功能
+export const searchTool: Tool = {
+  schema: {
+    name: 'web_search',
+    description: 'Search the web for current information',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+      },
+      required: ['query'],
+    },
+  },
+  handler: async ({ query }) => {
+    const apiKey = process.env.TAVILY_API_KEY;
+    if (!apiKey) throw new Error('TAVILY_API_KEY not set');
+    // 调用 Tavily API ...
+  },
+};
+```
+
+**在 `src/index.ts` 中注册**：
+
+```ts
+registerTool(calculatorTool);
+registerTool(readFileTool);
+registerTool(writeFileTool);
+registerTool(listDirTool);
+registerTool(shellTool);
+
+// 可选工具：有 key 才注册
+if (process.env.TAVILY_API_KEY) {
+  registerTool(searchTool);
+}
+```
+
+**验收条件**：
+
+- [ ] agent 可以读取并描述项目中的某个文件内容
+- [ ] agent 可以执行 `ls` 并告知目录结构
+- [ ] 工具输出超过 20000 字符时自动截断
+
+---
+
+### 2.2 流式输出
+
+当前 `chat()` 是阻塞式的，用户等待 LLM 生成完才看到回复。
+
+**在 `src/llm/types.ts` 中扩展接口**：
+
+```ts
+export interface LLMClient {
+  chat(messages: Message[], tools?: ToolSchema[], system?: string): Promise<LLMResponse>;
+
+  // 新增：流式版本（可选实现）
+  stream?(
+    messages: Message[],
+    tools: ToolSchema[],
+    system: string | undefined,
+    onChunk: (text: string) => void,
+  ): Promise<LLMResponse>;
+}
+```
+
+**在 `src/agent/loop.ts` 中优先使用流式**：
+
+```ts
+// runAgent 新增 onText 回调
+export interface RunAgentOptions {
+  // ...已有字段
+  onText?: (delta: string) => void;  // ← 新增
+  systemPrompt?: string;             // ← 新增
+}
+
+// loop 内部
+const response = llmClient.stream
+  ? await llmClient.stream(messages, toolSchemas, options.systemPrompt, options.onText ?? (() => {}))
+  : await llmClient.chat(messages, toolSchemas, options.systemPrompt);
+```
+
+**CLI 层传入 onText**：
+
+```ts
+const result = await runAgent({
+  // ...
+  onText: (delta) => process.stdout.write(delta),  // 字符级流式输出
+});
+// 流式完成后换行
+console.log('');
+```
+
+**验收条件**：
+
+- [ ] CLI 模式下 LLM 输出逐字符实时显示
+- [ ] 流式和非流式最终结果一致
+- [ ] 工具调用期间不流式（等待工具执行完再继续）
+
+---
+
+### 2.3 错误恢复：指数退避重试
+
+当前 LLM 调用失败直接 throw，没有任何重试。
+
+**在 `src/agent/loop.ts` 中加入重试逻辑**：
+
+```ts
+// 新增工具函数
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  options: { maxRetries?: number; signal?: AbortSignal } = {}
+): Promise<T> {
+  const { maxRetries = 3 } = options;
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      if (!isRetryable(lastError)) throw lastError;
+      if (attempt === maxRetries - 1) break;
+
+      const delayMs = Math.min(1000 * Math.pow(2, attempt), 30000);  // 1s, 2s, 4s... 最大 30s
+      console.warn(`[agent] LLM call failed (attempt ${attempt + 1}/${maxRetries}), retrying in ${delayMs}ms...`);
+      await sleep(delayMs);
+    }
+  }
+
+  throw lastError;
+}
+
+function isRetryable(error: Error): boolean {
+  const msg = error.message.toLowerCase();
+  // 429 rate limit、5xx server error 可重试
+  return msg.includes('429') || msg.includes('rate limit') ||
+    msg.includes('500') || msg.includes('502') || msg.includes('503');
+}
+
+// loop 内调用
+const response = await withRetry(() =>
+  llmClient.chat(messages, toolSchemas, systemPrompt)
+);
+```
+
+**验收条件**：
+
+- [ ] 模拟 429 响应，agent 自动重试 3 次并打印等待日志
+- [ ] 非可重试错误（如 401 invalid API key）立即失败，不重试
+
+---
+
+### 2.4 补全 HTTP transport
+
+当前 `startHTTP()` 是空壳。Fastify 已经在 `package.json` 的 dependencies 里了，直接用。
+
+**`src/transport/http.ts` 实现**：
+
+```ts
+import Fastify from 'fastify';
+
+export async function startHTTP(options: HTTPTransportOptions = {}): Promise<void> {
+  const { port = 3000, host = '0.0.0.0' } = options;
+
+  const app = Fastify({ logger: false });
+
+  // POST /chat
+  app.post<{ Body: ChatRequest }>('/chat', async (req, reply) => {
+    const { sessionId, message } = req.body;
+    // 调用 agent，返回结果
+    // chatHandler 由外部注入（类似 CLI 的 InputHandler）
+    const response = await options.chatHandler?.(req.body);
+    return reply.send({ sessionId, response, timestamp: Date.now() });
+  });
+
+  // GET /sessions
+  app.get('/sessions', async (_req, reply) => {
+    const sessions = await options.sessionListHandler?.();
+    return reply.send({ sessions: sessions ?? [] });
+  });
+
+  // GET /health
+  app.get('/health', async (_req, reply) => {
+    return reply.send({ status: 'ok', timestamp: Date.now() });
+  });
+
+  await app.listen({ port, host });
+  console.log(`HTTP server listening on ${host}:${port}`);
+}
+```
+
+**验收条件**：
+
+- [ ] `TRANSPORT=http pnpm http` 启动后，`curl POST /chat` 返回正确响应
+- [ ] `GET /health` 返回 `{ status: 'ok' }`
+- [ ] `GET /sessions` 返回当前会话列表
+
+---
+
+### Phase 2 交付物
+
+| 交付物 | 验收标准 |
+|--------|---------|
+| 文件工具（read/write/ls） | agent 能读项目文件并描述 |
+| Shell 工具 | agent 能执行命令查看结果 |
+| 流式输出 | CLI 逐字符实时显示 |
+| 指数退避重试 | 429 自动重试 3 次 |
+| HTTP transport | POST /chat 可用 |
+
+---
+
+## Phase 3：Memory / RAG + Planner（W5–W8）
+
+**目标**：让 agent 拥有跨会话记忆，并能处理复杂的多步骤任务。
+
+---
+
+### 3.1 Memory 层
+
+**为什么需要**：当前每次对话结束，agent 忘掉一切。用户的偏好、项目结构、历史结论都要重复告知。
+
+**三级记忆设计**（和之前通用 plan 一致，但针对这个项目的实现）：
+
+```
+短期记忆  → 已有 session store（保持不变）
+工作记忆  → 新增 src/memory/facts.ts（SQLite JSON1 或简单 JSON 文件）
+语义记忆  → 新增 src/memory/semantic.ts（LanceDB 向量检索）
+```
+
+**接口定义 `src/memory/types.ts`**：
+
+```ts
+export interface MemoryService {
+  // 工作记忆：明确事实
+  setFact(key: string, value: string): Promise<void>;
   getFact(key: string): Promise<string | null>;
-  listFacts(prefix?: string): Promise<Array<{ key: string; value: string }>>;
-  upsert(id: string, content: string, metadata?: Record<string, unknown>): Promise<void>;
-  search(query: string, topK?: number, threshold?: number): Promise<MemoryChunk[]>;
-  delete(id: string): Promise<void>;
+  listFacts(): Promise<Array<{ key: string; value: string }>>;
+  deleteFact(key: string): Promise<void>;
+
+  // 语义检索
+  index(id: string, content: string, metadata?: Record<string, unknown>): Promise<void>;
+  search(query: string, topK?: number): Promise<Array<{ content: string; score: number }>>;
+
+  // 构建注入 context（供 system prompt 使用）
   buildContext(query: string): Promise<string | null>;
 }
 ```
 
-### Plan 接口
+**简单实现（Phase 3 早期，无向量库依赖）**：
+
+用 JSON 文件存 facts，关键词匹配做"语义"搜索。等需要真正的语义检索时再换 LanceDB，接口不变。
+
+```ts
+// src/memory/json-memory.ts
+export class JsonMemoryService implements MemoryService {
+  private factsPath: string;
+
+  async setFact(key: string, value: string): Promise<void> {
+    const facts = await this.loadFacts();
+    facts[key] = value;
+    await this.saveFacts(facts);
+  }
+
+  async buildContext(query: string): Promise<string | null> {
+    const facts = await this.loadFacts();
+    const entries = Object.entries(facts);
+    if (entries.length === 0) return null;
+
+    // 简单关键词过滤
+    const relevant = entries.filter(([k, v]) =>
+      query.split(' ').some(word =>
+        k.toLowerCase().includes(word.toLowerCase()) ||
+        v.toLowerCase().includes(word.toLowerCase())
+      )
+    );
+
+    if (relevant.length === 0) return null;
+
+    return '[MEMORY]\n' +
+      relevant.map(([k, v]) => `- ${k}: ${v}`).join('\n') +
+      '\n[/MEMORY]';
+  }
+
+  // ...load/save helpers
+}
+```
+
+**集成到 agent loop**：
+
+在 `buildSystemPrompt` 中注入 memory context：
+
+```ts
+// src/agent/prompt.ts
+export async function buildSystemPrompt(options: {
+  memory?: MemoryService;
+  userQuery?: string;
+  extraContext?: string;
+} = {}): Promise<string> {
+  const base = `...`; // 同 Phase 1
+
+  let memoryContext = '';
+  if (options.memory && options.userQuery) {
+    const ctx = await options.memory.buildContext(options.userQuery);
+    if (ctx) memoryContext = `\n\n${ctx}`;
+  }
+
+  return base + memoryContext + (options.extraContext ? `\n\n${options.extraContext}` : '');
+}
+```
+
+**CLI 命令支持**：
+
+```
+/remember <key> = <value>   存入工作记忆
+/forget <key>               删除指定记忆
+/memory                     列出所有工作记忆
+```
+
+**升级到真正向量检索（可选，当 JSON 关键词搜索不够用时）**：
+
+```ts
+// 安装：pnpm add vectordb  (LanceDB)
+// 替换 JsonMemoryService 实现，接口完全不变
+import * as lancedb from 'vectordb';
+```
+
+**验收条件**：
+
+- [ ] `/remember 项目语言 = TypeScript` 存入后，下次对话自动注入到 system prompt
+- [ ] `/memory` 显示所有记忆条目
+- [ ] `/forget` 删除指定条目
+- [ ] memory context 注入后 LLM 明显引用了相关信息
+
+---
+
+### 3.2 Tool Registry 升级：加权限声明
+
+当前 Registry 没有任何权限控制，所有工具对所有调用者开放。
+
+**扩展 `src/tools/types.ts`**：
+
+```ts
+export interface Tool {
+  schema: ToolSchema;
+  handler: (input: Record<string, unknown>) => Promise<string>;
+
+  // 新增：权限声明
+  riskLevel?: 'low' | 'medium' | 'high';
+  requiresConfirmation?: boolean;  // 执行前需要用户确认
+  description?: string;            // 内部说明，不发给 LLM
+}
+```
+
+**更新 Registry 支持权限过滤**：
+
+```ts
+class Registry implements IToolRegistry {
+  // 新增：获取高风险工具列表
+  getHighRiskTools(): Tool[] {
+    return Array.from(this.tools.values())
+      .filter(t => t.riskLevel === 'high');
+  }
+
+  // 修改 dispatch：高风险工具执行前请求确认
+  async dispatch(
+    name: string,
+    input: Record<string, unknown>,
+    confirmFn?: (preview: string) => Promise<boolean>,  // ← 新增
+  ): Promise<string> {
+    const tool = this.tools.get(name);
+    if (!tool) throw new Error(`Tool '${name}' not found`);
+
+    if (tool.requiresConfirmation && confirmFn) {
+      const preview = `${name}(${JSON.stringify(input)})`;
+      const approved = await confirmFn(preview);
+      if (!approved) return 'Tool execution cancelled by user.';
+    }
+
+    try {
+      return await tool.handler(input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Tool '${name}' failed: ${message}`);
+    }
+  }
+}
+```
+
+**工具注册时声明风险**：
+
+```ts
+export const shellTool: Tool = {
+  schema: { /* ... */ },
+  riskLevel: 'high',
+  requiresConfirmation: true,  // shell 执行前需确认
+  handler: async ({ command }) => { /* ... */ },
+};
+
+export const readFileTool: Tool = {
+  schema: { /* ... */ },
+  riskLevel: 'low',  // 只读，不需要确认
+  handler: async ({ path }) => { /* ... */ },
+};
+```
+
+**CLI 确认提示**：
+
+```ts
+const confirmFn = async (preview: string): Promise<boolean> => {
+  return new Promise(resolve => {
+    rl.question(`\n[confirm] ${preview}\nProceed? [y/N] `, answer => {
+      resolve(answer.toLowerCase() === 'y');
+    });
+  });
+};
+```
+
+**验收条件**：
+
+- [ ] `shell` 工具执行前 CLI 显示确认提示
+- [ ] 用户输入 `n` 时，工具不执行，LLM 收到取消通知
+- [ ] `read_file` 不触发确认
+
+---
+
+### 3.3 Planner
+
+**为什么需要**：面对"帮我重构这个模块"这类复杂任务，当前 agent 会一口气乱改，没有计划。Planner 先拆分任务，再逐步执行。
+
+**触发条件**（简单启发式，不用 LLM 判断）：
+
+```ts
+function shouldPlan(message: string): boolean {
+  if (message.startsWith('/plan ')) return true;
+  if (message.length > 200) return true;
+  const multiStepWords = ['先', '然后', '最后', '再', 'then', 'after', 'finally', 'step'];
+  return multiStepWords.some(w => message.toLowerCase().includes(w));
+}
+```
+
+**Plan 数据结构**：
 
 ```ts
 interface Plan {
   id: string;
   goal: string;
-  mode: 'sequential' | 'dag';
   steps: PlanStep[];
-  status: 'draft' | 'confirmed' | 'running' | 'done' | 'failed';
-  createdAt: number;
+  status: 'pending' | 'running' | 'done';
 }
 
 interface PlanStep {
-  id: string;
+  index: number;
   title: string;
-  description: string;
-  deps: string[];
-  assignedRole?: AgentRole;
-  status: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+  status: 'pending' | 'running' | 'done' | 'failed';
   result?: string;
-  startedAt?: number;
-  endedAt?: number;
 }
 ```
 
-### ObservabilityEvent 接口
+**Planner 实现**（`src/agent/planner.ts`）：
 
 ```ts
-type ObservabilityEvent =
-  | { type: 'llm_call'; traceId: string; spanId: string;
-      model: string; promptTokens: number; completionTokens: number;
-      latencyMs: number; finishReason: string; }
-  | { type: 'tool_call'; traceId: string; spanId: string;
-      toolName: string; durationMs: number; success: boolean; error?: string; }
-  | { type: 'compaction'; traceId: string;
-      beforeTokens: number; afterTokens: number; strategy: string; }
-  | { type: 'plan_step'; traceId: string; spanId: string;
-      stepId: string; role: string; durationMs: number; status: string; };
+export async function createPlan(
+  goal: string,
+  llmClient: LLMClient,
+  systemPrompt: string,
+): Promise<Plan> {
+  // 用 LLM 把 goal 分解成步骤列表
+  const response = await llmClient.chat(
+    [{
+      role: 'user',
+      content: [{
+        type: 'text',
+        text: `Break this task into clear numbered steps. Return ONLY a JSON array of step titles.
+Task: ${goal}`,
+      }],
+    }],
+    [],  // 不用工具
+    `You are a task planning assistant. Return ONLY valid JSON arrays like ["Step 1", "Step 2"].`,
+  );
+
+  const text = response.content
+    .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
+    .map(c => c.text).join('');
+
+  // 解析步骤
+  const stepTitles: string[] = JSON.parse(text.match(/\[[\s\S]*\]/)?.[0] ?? '[]');
+
+  return {
+    id: `plan-${Date.now()}`,
+    goal,
+    steps: stepTitles.map((title, i) => ({
+      index: i,
+      title,
+      status: 'pending',
+    })),
+    status: 'pending',
+  };
+}
+```
+
+**在 loop 中集成 Planner**：
+
+```ts
+// index.ts handler
+if (shouldPlan(input)) {
+  const plan = await createPlan(input, llmClient, systemPrompt);
+
+  // 展示计划给用户确认
+  console.log('\n[Planner] Task breakdown:');
+  plan.steps.forEach((s, i) => console.log(`  ${i + 1}. ${s.title}`));
+
+  const confirmed = await askConfirmation('Execute this plan? [y/N] ');
+  if (!confirmed) {
+    console.log('Plan cancelled.');
+    return 'Okay, cancelled.';
+  }
+
+  // 逐步执行
+  let lastResult = '';
+  for (const step of plan.steps) {
+    console.log(`\n[Step ${step.index + 1}/${plan.steps.length}] ${step.title}`);
+    step.status = 'running';
+
+    const result = await runAgent({
+      prompt: `${step.title}\n\nContext from previous steps:\n${lastResult}`,
+      llmClient,
+      toolRegistry: registry,
+      initialMessages: await sessionManager.load(sid),
+      maxIterations: 10,
+      systemPrompt,
+    });
+
+    step.status = 'done';
+    step.result = result.response;
+    lastResult = result.response;
+    await sessionManager.save(sid, result.messages);
+  }
+
+  return `Plan complete.\n\nFinal result:\n${lastResult}`;
+}
+```
+
+**验收条件**：
+
+- [ ] `/plan 帮我给这个项目加上 ESLint 配置` 生成分步计划
+- [ ] 用户确认后，agent 逐步执行每个 step 并显示进度
+- [ ] 用户拒绝执行时，计划取消，不执行任何操作
+- [ ] 每个 step 的上下文（前一 step 的结果）传递给下一 step
+
+---
+
+### Phase 3 交付物
+
+| 交付物 | 验收标准 |
+|--------|---------|
+| Memory（工作记忆） | `/remember` `/forget` `/memory` 可用 |
+| Memory 注入 system prompt | LLM 引用存储的事实 |
+| Tool 权限声明 | shell 工具执行前弹确认 |
+| Planner | `/plan` 分解任务并逐步执行 |
+
+---
+
+## 完整文件改动清单
+
+```
+src/
+├── agent/
+│   ├── loop.ts          修改：加 systemPrompt 参数、withRetry、onText 流式回调
+│   ├── prompt.ts        新增：buildSystemPrompt()，支持 memory 注入
+│   └── planner.ts       新增：createPlan()，步骤分解与执行
+├── llm/
+│   ├── types.ts         修改：LLMClient.chat() 加 systemPrompt 参数，新增 stream()
+│   ├── anthropic.ts     修改：实现 systemPrompt 传递和流式输出
+│   └── openai.ts        修改：同上
+├── memory/
+│   ├── types.ts         新增：MemoryService 接口
+│   └── json-memory.ts   新增：基于 JSON 文件的简单实现
+├── session/
+│   ├── store.ts         修复 B1：用 stat() 获取真实文件时间
+│   └── manager.ts       修复 B2：prune 时打印日志
+├── tools/
+│   ├── types.ts         修改：Tool 加 riskLevel 和 requiresConfirmation
+│   ├── registry.ts      修改：dispatch 加 confirmFn 参数
+│   ├── files.ts         新增：read_file / write_file / list_dir
+│   └── shell.ts         新增：shell 工具
+├── transport/
+│   ├── cli.ts           修改：加 slash 命令处理、确认提示、流式输出
+│   └── http.ts          修改：用 Fastify 实现真正的 HTTP server
+├── utils/
+│   └── debug.ts         修复 B3：isEnabled 改为动态判断
+└── index.ts             修改：注册新工具、传 systemPrompt、调用 prune
 ```
 
 ---
 
-*Coding Agent Refactoring Plan · v1.0 · Confidential*
+*fan_bot Refactoring Plan · v1.0*
