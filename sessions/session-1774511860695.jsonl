@@ -1,0 +1,6 @@
+{"role":"user","content":[{"type":"text","text":"你好"}]}
+{"role":"assistant","content":[{"type":"text","text":"你好！很高兴见到你。有什么我可以帮你的吗？"}]}
+{"role":"user","content":[{"type":"text","text":"计算 123 + 456"}]}
+{"role":"assistant","content":[{"type":"text","text":"我来帮你计算 123 + 456。"},{"type":"tool_use","id":"calculator:0","name":"calculator","input":{"operation":"add","a":123,"b":456}}]}
+{"role":"user","content":[{"type":"tool_result","tool_use_id":"calculator:0","content":"579","is_error":false}]}
+{"role":"assistant","content":[{"type":"text","text":"123 + 456 = **579**"}]}

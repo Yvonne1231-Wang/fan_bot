@@ -1,0 +1,27 @@
+{
+  "name": "fan_bot",
+  "version": "1.0.0",
+  "description": "A lightweight, framework-free AI agent written in TypeScript",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "cli": "tsx src/index.ts",
+    "http": "TRANSPORT=http tsx src/index.ts"
+  },
+  "keywords": ["ai", "agent", "llm", "claude"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "dotenv": "^17.3.1",
+    "fastify": "^5.8.4",
+    "openai": "^4.33.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.4.0"
+  }
+}

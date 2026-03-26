@@ -1,0 +1,6 @@
+{"role":"user","content":[{"type":"text","text":"你好，今天什么天气？"}]}
+{"role":"assistant","content":[{"type":"text","text":"你好！我无法获取实时天气信息，因为我没有连接到天气数据源。\n\n你可以通过以下方式查询今天的天气：\n- 查看手机自带的天气应用\n- 使用搜索引擎搜索\"你所在城市+天气\"\n- 查看天气预报网站（如中国天气网、墨迹天气等）\n\n如果你需要我帮你计算任何数字，我可以使用计算器工具来协助你！"}]}
+{"role":"user","content":[{"type":"text","text":"帮忙计算一下11+22"}]}
+{"role":"assistant","content":[{"type":"text","text":"我来帮你计算 11 + 22："},{"type":"tool_use","id":"calculator:0","name":"calculator","input":{"operation":"add","a":11,"b":22}}]}
+{"role":"user","content":[{"type":"tool_result","tool_use_id":"calculator:0","content":"33","is_error":false}]}
+{"role":"assistant","content":[{"type":"text","text":"11 + 22 = **33**"}]}
