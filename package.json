@@ -10,14 +10,20 @@
     "cli": "tsx src/index.ts",
     "http": "TRANSPORT=http tsx src/index.ts"
   },
-  "keywords": ["ai", "agent", "llm", "claude"],
+  "keywords": [
+    "ai",
+    "agent",
+    "llm",
+    "claude"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
     "dotenv": "^17.3.1",
     "fastify": "^5.8.4",
-    "openai": "^4.33.0"
+    "openai": "^4.33.0",
+    "tavily": "^1.0.2"
   },
   "devDependencies": {
     "@types/node": "^20.12.0",

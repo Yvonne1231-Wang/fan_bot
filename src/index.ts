@@ -20,6 +20,7 @@ import { registry, registerTool } from './tools/registry.js';
 import { calculatorTool } from './tools/calculator.js';
 import { readFileTool, writeFileTool, listDirTool } from './tools/files.js';
 import { shellTool } from './tools/shell.js';
+import { webSearchTool } from './tools/web_search.js';
 import {
   startCLI,
   parseArgs,
@@ -72,6 +73,7 @@ async function startHTTPServer(): Promise<void> {
   registerTool(writeFileTool);
   registerTool(listDirTool);
   registerTool(shellTool);
+  registerTool(webSearchTool);
 
   await startHTTP({
     port,
@@ -130,6 +132,7 @@ async function startCLITransport(
   registerTool(writeFileTool);
   registerTool(listDirTool);
   registerTool(shellTool);
+  registerTool(webSearchTool);
 
   // Load existing session or create new
   const sid = sessionId || `session-${Date.now()}`;
