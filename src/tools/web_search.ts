@@ -1,6 +1,6 @@
 // ─── Web Search Tool ────────────────────────────────────────────────────────
 
-import { TavilyClient } from 'tavily';
+import { tavily } from '@tavily/core';
 import type { Tool } from './types.js';
 import { createDebug } from '../utils/debug.js';
 
@@ -67,14 +67,13 @@ export const webSearchTool: Tool = {
     log.debug(`Searching for: ${query}`);
 
     try {
-      const tavily = new TavilyClient({ apiKey });
+      const client = tavily({ apiKey });
 
-      const response = await tavily.search({
-        query,
-        search_depth: searchDepth,
-        max_results: maxResults,
-        include_domains: includeDomains,
-        exclude_domains: excludeDomains,
+      const response = await client.search(query, {
+        searchDepth,
+        maxResults,
+        includeDomains,
+        excludeDomains,
       });
 
       if (!response.results || response.results.length === 0) {
@@ -82,8 +81,8 @@ export const webSearchTool: Tool = {
       }
 
       const formattedResults = response.results
-        .map((result, index: number) => {
-          return `[${index + 1}] ${result.title}\nURL: ${result.url}\n${result.content}\n`;
+        .map((result: { title?: string; url?: string; content?: string }, index: number) => {
+          return `[${index + 1}] ${result.title ?? 'Untitled'}\nURL: ${result.url ?? 'N/A'}\n${result.content ?? ''}\n`;
         })
         .join('\n---\n\n');
 

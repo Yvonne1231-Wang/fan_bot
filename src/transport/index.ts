@@ -1,27 +1,59 @@
 // ─── Transport Module ───────────────────────────────────────────────────────
 
-// CLI Transport
+// Unified Types
+export type {
+  ChannelType,
+  MessageContext,
+  ContentBlockType,
+  TextContentBlock,
+  ImageContentBlock,
+  FileContentBlock,
+  CardContentBlock,
+  CardAction,
+  ContentBlock,
+  UnifiedMessage,
+  ResponseBlockType,
+  TextResponseBlock,
+  MarkdownResponseBlock,
+  ImageResponseBlock,
+  FileResponseBlock,
+  CardResponseBlock,
+  ActionResponseBlock,
+  ResponseBlock,
+  UnifiedResponse,
+  StreamEventType,
+  StreamEvent,
+  MessageTransformer,
+  UnifiedMessageFactory,
+  OriginalResponseFactory,
+} from './unified.js';
+
+// Channel Adapter
 export {
-  startCLI,
+  BaseChannelAdapter,
+  DefaultChannelAdapterManager,
+  type ChannelAdapterConfig,
+  type MessageHandler,
+  type StreamMessageHandler,
+  type ChannelAdapter,
+  type ChannelAdapterManager,
+} from './adapter.js';
+
+// CLI Adapter
+export {
+  CLIChannelAdapter,
+  createCLIAdapter,
   parseArgs,
   printHelp,
-  type InputHandler,
-} from './cli.js';
+  type CLIAdapterConfig,
+} from './cli-adapter.js';
 
-// HTTP Transport
+// HTTP Adapter
 export {
-  startHTTP,
-  createServer,
-  type ChatHandler,
-  type SessionListHandler,
-} from './http.js';
-
-// Types
-export type {
-  CLITransportOptions,
-  HTTPTransportOptions,
-  ChatRequest,
-  ChatResponse,
-  SessionListResponse,
-  TransportError,
-} from './types.js';
+  HTTPChannelAdapter,
+  createHTTPAdapter,
+  type HTTPAdapterConfig,
+  type HTTPChatRequest,
+  type HTTPChatResponse,
+  type HTTPSessionListResponse,
+} from './http-adapter.js';

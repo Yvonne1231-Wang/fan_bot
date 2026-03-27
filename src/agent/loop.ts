@@ -5,6 +5,7 @@ import type {
   Message,
   ContentBlock,
   ToolUseBlock,
+  AgentCallbacks,
 } from '../llm/types.js';
 import type { ToolRegistry } from '../tools/types.js';
 import type { MemoryService } from '../memory/types.js';
@@ -15,9 +16,6 @@ const log = createDebug('agent:loop');
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-/**
- * Options for running the agent loop.
- */
 export interface RunAgentOptions {
   prompt: string;
   llmClient: LLMClient;
@@ -30,31 +28,19 @@ export interface RunAgentOptions {
   abortSignal?: AbortSignal;
   memory?: MemoryService;
   autoExtractMemory?: boolean;
+  callbacks?: AgentCallbacks;
 }
 
-/**
- * Result of running the agent loop.
- */
 export interface AgentResult {
-  /** Final text response from the agent */
   response: string;
-
-  /** Complete message history including this turn */
   messages: Message[];
-
-  /** Number of iterations performed */
   iterations: number;
-
-  /** Token usage if available */
   usage?: {
     inputTokens: number;
     outputTokens: number;
   };
 }
 
-/**
- * Error thrown when agent loop exceeds maximum iterations.
- */
 export class AgentLoopError extends Error {
   constructor(iterations: number) {
     super(`Agent loop exceeded maximum iterations (${iterations})`);
@@ -64,16 +50,10 @@ export class AgentLoopError extends Error {
 
 // ─── Helper Functions ─────────────────────────────────────────────────────
 
-/**
- * Create a text content block.
- */
 function textBlock(text: string): ContentBlock {
   return { type: 'text', text };
 }
 
-/**
- * Create a user message.
- */
 function userMessage(content: string | ContentBlock[]): Message {
   return {
     role: 'user',
@@ -81,9 +61,6 @@ function userMessage(content: string | ContentBlock[]): Message {
   };
 }
 
-/**
- * Create an assistant message.
- */
 function assistantMessage(content: ContentBlock[]): Message {
   return {
     role: 'assistant',
@@ -91,9 +68,6 @@ function assistantMessage(content: ContentBlock[]): Message {
   };
 }
 
-/**
- * Create a tool result block.
- */
 function toolResultBlock(
   toolUseId: string,
   content: string,
@@ -107,9 +81,6 @@ function toolResultBlock(
   };
 }
 
-/**
- * Extract text content from message content blocks.
- */
 function extractText(content: ContentBlock[]): string {
   return content
     .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
@@ -152,9 +123,6 @@ function isConverging(messages: Message[]): boolean {
   return nonEmpty[0] === nonEmpty[1] && nonEmpty[1] === nonEmpty[2];
 }
 
-/**
- * Check if an error is retryable (rate limit or server error).
- */
 function isRetryable(error: Error): boolean {
   const msg = error.message.toLowerCase();
   return (
@@ -167,16 +135,10 @@ function isRetryable(error: Error): boolean {
   );
 }
 
-/**
- * Sleep for specified milliseconds.
- */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Call a function with exponential backoff retry.
- */
 async function withRetry<T>(
   fn: () => Promise<T>,
   options: {
@@ -208,20 +170,6 @@ async function withRetry<T>(
 
 // ─── Main Agent Loop ──────────────────────────────────────────────────────
 
-/**
- * Run the agent loop to completion.
- *
- * This function implements the core agent loop:
- * 1. Load/create message history
- * 2. Add user prompt
- * 3. Loop: call LLM, handle tool calls, repeat
- * 4. Return final response
- *
- * @param options - Configuration options
- * @returns Agent result with response and history
- * @throws AgentLoopError if max iterations exceeded
- * @throws Error if LLM call fails
- */
 export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
   const {
     prompt,
@@ -231,101 +179,112 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
     maxIterations = 10,
     systemPrompt,
     abortSignal,
+    callbacks,
   } = options;
 
   const checkAbort = () => {
     if (abortSignal?.aborted) {
+      callbacks?.onError?.('Agent execution cancelled by user');
       throw new Error('Agent execution cancelled by user');
     }
   };
 
-  // Initialize message history
   const messages: Message[] = [...initialMessages];
-
-  // Add user prompt
   messages.push(userMessage(prompt));
 
-  // Track iterations and usage
   let iterations = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
-  // Main loop
-  while (iterations < maxIterations) {
-    checkAbort();
-    iterations++;
+  try {
+    while (iterations < maxIterations) {
+      checkAbort();
+      iterations++;
 
-    // Get tool schemas
-    const toolSchemas = toolRegistry.getSchemas();
+      const toolSchemas = toolRegistry.getSchemas();
 
-    // Call LLM with retry for non-streaming, direct call for streaming
-    let response;
-    if (llmClient.stream) {
-      response = await llmClient.stream(
-        messages,
-        toolSchemas,
-        systemPrompt,
-        options.onText ?? ((_) => {}),
-        options.abortSignal,
-      );
-    } else {
-      const callLLM = async () => {
-        const result = await llmClient.chat(
+      let response;
+      if (llmClient.stream) {
+        response = await llmClient.stream(
           messages,
           toolSchemas,
           systemPrompt,
+          (delta) => {
+            callbacks?.onContentDelta?.(delta);
+            options.onText?.(delta);
+          },
+          callbacks?.onThinking,
           options.abortSignal,
         );
-        if (options.onText) {
-          const text = extractText(result.content);
-          options.onText(text);
-        }
-        return result;
-      };
-
-      response = await withRetry(callLLM, {
-        maxRetries: 3,
-        onRetry: (attempt, delayMs, error) => {
-          log.warn(
-            `LLM call failed (attempt ${attempt}/3), retrying in ${delayMs}ms: ${error.message}`,
-          );
-        },
-      });
-    }
-
-    // Track token usage
-    if (response.usage) {
-      totalInputTokens += response.usage.input_tokens;
-      totalOutputTokens += response.usage.output_tokens;
-    }
-
-    // Add assistant response to history
-    messages.push(assistantMessage(response.content));
-
-    // Handle stop reason
-    const textPreview = extractText(response.content).slice(0, 100);
-    log.debug(
-      `iteration ${iterations}, stop_reason: ${response.stop_reason}, content blocks: ${response.content.length}, text: ${textPreview}`,
-    );
-    switch (response.stop_reason) {
-      case 'end_turn': {
-        const textResponse = extractText(response.content);
-        if (hasRepetitiveContent(textResponse)) {
-          log.warn('Detected repetitive content, forcing end');
-          const truncated = textResponse.slice(0, 200);
-          return {
-            response:
-              truncated + '\n\n[Response truncated due to repetitive content]',
+      } else {
+        const callLLM = async () => {
+          const result = await llmClient.chat(
             messages,
-            iterations,
-            usage: {
-              inputTokens: totalInputTokens,
-              outputTokens: totalOutputTokens,
-            },
-          };
-        }
-        if (isConverging(messages)) {
-          log.warn('Detected converging loop, forcing end');
+            toolSchemas,
+            systemPrompt,
+            options.abortSignal,
+          );
+          const text = extractText(result.content);
+          callbacks?.onContentDelta?.(text);
+          options.onText?.(text);
+          return result;
+        };
+
+        response = await withRetry(callLLM, {
+          maxRetries: 3,
+          onRetry: (attempt, delayMs, error) => {
+            log.warn(
+              `LLM call failed (attempt ${attempt}/3), retrying in ${delayMs}ms: ${error.message}`,
+            );
+          },
+        });
+      }
+
+      if (response.usage) {
+        totalInputTokens += response.usage.input_tokens;
+        totalOutputTokens += response.usage.output_tokens;
+      }
+
+      messages.push(assistantMessage(response.content));
+
+      const textPreview = extractText(response.content).slice(0, 100);
+      log.debug(
+        `iteration ${iterations}, stop_reason: ${response.stop_reason}, content blocks: ${response.content.length}, text: ${textPreview}`,
+      );
+
+      switch (response.stop_reason) {
+        case 'end_turn': {
+          const textResponse = extractText(response.content);
+          if (hasRepetitiveContent(textResponse)) {
+            log.warn('Detected repetitive content, forcing end');
+            const truncated = textResponse.slice(0, 200);
+            callbacks?.onComplete?.();
+            return {
+              response:
+                truncated +
+                '\n\n[Response truncated due to repetitive content]',
+              messages,
+              iterations,
+              usage: {
+                inputTokens: totalInputTokens,
+                outputTokens: totalOutputTokens,
+              },
+            };
+          }
+          if (isConverging(messages)) {
+            log.warn('Detected converging loop, forcing end');
+            callbacks?.onComplete?.();
+            return {
+              response: textResponse,
+              messages,
+              iterations,
+              usage: {
+                inputTokens: totalInputTokens,
+                outputTokens: totalOutputTokens,
+              },
+            };
+          }
+          callbacks?.onComplete?.();
           return {
             response: textResponse,
             messages,
@@ -336,72 +295,81 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
             },
           };
         }
-        return {
-          response: textResponse,
-          messages,
-          iterations,
-          usage: {
-            inputTokens: totalInputTokens,
-            outputTokens: totalOutputTokens,
-          },
-        };
-      }
 
-      case 'tool_use': {
-        const toolUseBlocks = response.content.filter(
-          (c): c is ToolUseBlock => c.type === 'tool_use',
-        );
-        log.debug(`tool_use blocks found: ${toolUseBlocks.length}`);
-        log.debug(
-          `response content types: ${response.content.map((c) => c.type).join(', ')}`,
-        );
+        case 'tool_use': {
+          const toolUseBlocks = response.content.filter(
+            (c): c is ToolUseBlock => c.type === 'tool_use',
+          );
+          log.debug(`tool_use blocks found: ${toolUseBlocks.length}`);
+          log.debug(
+            `response content types: ${response.content.map((c) => c.type).join(', ')}`,
+          );
 
-        const toolResults: ContentBlock[] = [];
+          const toolResults: ContentBlock[] = [];
 
-        for (const toolUse of toolUseBlocks) {
-          log.debug(`executing tool: ${toolUse.name}`);
-          try {
-            const result = await toolRegistry.dispatchWithConfirmation(
+          for (const toolUse of toolUseBlocks) {
+            log.debug(`executing tool: ${toolUse.name}`);
+            callbacks?.onToolStart?.(
               toolUse.name,
               toolUse.input,
-              options.confirmFn,
+              null,
+              toolUse.id,
             );
-            log.debug(`tool result: ${result.slice(0, 100)}`);
-            toolResults.push(toolResultBlock(toolUse.id, result));
-          } catch (error) {
-            const message =
-              error instanceof Error ? error.message : String(error);
-            log.error(`tool error: ${message}`);
-            toolResults.push(
-              toolResultBlock(toolUse.id, `Error: ${message}`, true),
-            );
+
+            try {
+              const result = await toolRegistry.dispatchWithConfirmation(
+                toolUse.name,
+                toolUse.input,
+                options.confirmFn,
+              );
+              log.debug(`tool result: ${result.slice(0, 100)}`);
+              callbacks?.onToolEnd?.(toolUse.name, result, null);
+              toolResults.push(toolResultBlock(toolUse.id, result));
+            } catch (error) {
+              const message =
+                error instanceof Error ? error.message : String(error);
+              log.error(`tool error: ${message}`);
+              callbacks?.onToolEnd?.(toolUse.name, `Error: ${message}`, null);
+              toolResults.push(
+                toolResultBlock(toolUse.id, `Error: ${message}`, true),
+              );
+            }
           }
+
+          messages.push(userMessage(toolResults));
+          continue;
         }
 
-        messages.push(userMessage(toolResults));
-        continue;
+        case 'max_tokens':
+          callbacks?.onError?.('LLM response exceeded maximum token limit');
+          throw new Error('LLM response exceeded maximum token limit');
+
+        case 'stop_sequence':
+          callbacks?.onComplete?.();
+          return {
+            response: extractText(response.content),
+            messages,
+            iterations,
+            usage: {
+              inputTokens: totalInputTokens,
+              outputTokens: totalOutputTokens,
+            },
+          };
+
+        default:
+          callbacks?.onError?.(`Unknown stop reason: ${response.stop_reason}`);
+          throw new Error(`Unknown stop reason: ${response.stop_reason}`);
       }
-
-      case 'max_tokens':
-        throw new Error('LLM response exceeded maximum token limit');
-
-      case 'stop_sequence':
-        // Treat as complete
-        return {
-          response: extractText(response.content),
-          messages,
-          iterations,
-          usage: {
-            inputTokens: totalInputTokens,
-            outputTokens: totalOutputTokens,
-          },
-        };
-
-      default:
-        throw new Error(`Unknown stop reason: ${response.stop_reason}`);
     }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(`Agent error: ${message}`);
+    callbacks?.onError?.(message);
+    throw error;
   }
 
-  // Max iterations exceeded
-  throw new AgentLoopError(iterations);
+  callbacks?.onError?.(
+    `Agent loop exceeded maximum iterations (${maxIterations})`,
+  );
+  throw new AgentLoopError(maxIterations);
 }

@@ -283,6 +283,7 @@ export function createOpenAIClient(options: OpenAIClientOptions): LLMClient {
       tools: ToolSchema[] = [],
       systemPrompt: string | undefined,
       onChunk: (text: string) => void,
+      onThinking?: (thinking: string) => void,
       signal?: AbortSignal,
     ): Promise<LLMResponse> => {
       const openaiMessages = toOpenAIMessages(messages);

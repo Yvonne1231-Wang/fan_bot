@@ -186,6 +186,7 @@ export function createAnthropicClient(
       tools: ToolSchema[] = [],
       systemPrompt: string | undefined,
       onChunk: (text: string) => void,
+      onThinking?: (thinking: string) => void,
       signal?: AbortSignal,
     ): Promise<LLMResponse> => {
       const anthropicMessages: Anthropic.MessageParam[] = messages.map(
@@ -213,6 +214,12 @@ export function createAnthropicClient(
             anthropicTools.length > 0
               ? (anthropicTools as Anthropic.Tool[])
               : undefined,
+          thinking: onThinking
+            ? {
+                type: 'enabled',
+                budget_tokens: 10000,
+              }
+            : undefined,
           stream: true,
         },
         { signal },
@@ -220,13 +227,16 @@ export function createAnthropicClient(
 
       let fullContent: ContentBlock[] = [];
       let stopReason: LLMResponse['stop_reason'] = 'end_turn';
+      let thinkingBuffer = '';
 
       for await (const event of response) {
         if (signal?.aborted) {
           throw new Error('Request aborted');
         }
         if (event.type === 'content_block_start') {
-          if (event.content_block.type === 'text') {
+          if (event.content_block.type === 'thinking') {
+            thinkingBuffer = '';
+          } else if (event.content_block.type === 'text') {
             fullContent.push({ type: 'text', text: '' });
           } else if (event.content_block.type === 'tool_use') {
             const tb = event.content_block as Anthropic.ToolUseBlock;
@@ -238,7 +248,14 @@ export function createAnthropicClient(
             });
           }
         } else if (event.type === 'content_block_delta') {
-          if (event.delta.type === 'text_delta') {
+          if (event.delta.type === 'thinking_delta') {
+            thinkingBuffer += event.delta.thinking;
+            onThinking?.(thinkingBuffer);
+          } else if (event.delta.type === 'text_delta') {
+            if (thinkingBuffer) {
+              thinkingBuffer = '';
+              onThinking?.('');
+            }
             const lastBlock = fullContent[fullContent.length - 1];
             if (lastBlock?.type === 'text') {
               lastBlock.text += event.delta.text;
@@ -257,6 +274,10 @@ export function createAnthropicClient(
         } else if (event.type === 'message_delta') {
           stopReason = fromAnthropicStopReason(event.delta.stop_reason);
         }
+      }
+
+      if (thinkingBuffer) {
+        onThinking?.('');
       }
 
       return {

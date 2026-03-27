@@ -1,0 +1,583 @@
+// ─── Feishu Channel Adapter ────────────────────────────────────────────────
+
+import * as lark from '@larksuiteoapi/node-sdk';
+import {
+  BaseChannelAdapter,
+  type ChannelAdapterConfig,
+  type MessageHandler,
+} from '../transport/adapter.js';
+import type {
+  UnifiedMessage,
+  UnifiedResponse,
+  StreamEvent,
+  ContentBlock,
+  MessageContext,
+} from '../transport/unified.js';
+import { FeishuService, type FeishuServiceConfig } from './service.js';
+import type { FeishuMessageEvent } from './types.js';
+import { FeishuCardClient } from './card-client.js';
+import { StreamingCardRenderer } from './card.js';
+import { createDebug } from '../utils/debug.js';
+
+const log = createDebug('feishu:adapter');
+
+/**
+ * 飞书适配器配置
+ */
+export interface FeishuAdapterConfig extends Partial<ChannelAdapterConfig> {
+  appId: string;
+  appSecret: string;
+  encryptKey?: string;
+  verificationToken?: string;
+  enableStreamingCard?: boolean;
+  useLark?: boolean;
+}
+
+/**
+ * 飞书渠道适配器
+ */
+export class FeishuChannelAdapter extends BaseChannelAdapter {
+  readonly channelType = 'feishu' as const;
+  readonly name = 'Feishu Adapter';
+
+  private feishuConfig: FeishuAdapterConfig;
+  private feishuService: FeishuService;
+  private wsClient: lark.WSClient | null = null;
+  private eventDispatcher: lark.EventDispatcher | null = null;
+  private streamingCardMessageId: string | null = null;
+  private streamingCardContent: string = '';
+
+  /** 活跃的卡片渲染器映射：messageId -> renderer */
+  private activeRenderers = new Map<string, StreamingCardRenderer>();
+
+  constructor(config: FeishuAdapterConfig) {
+    super({ ...config, channelType: 'feishu' });
+    this.feishuConfig = config;
+
+    const serviceConfig: FeishuServiceConfig = {
+      appId: config.appId,
+      appSecret: config.appSecret,
+      encryptKey: config.encryptKey,
+      verificationToken: config.verificationToken,
+      useLark: config.useLark,
+    };
+    this.feishuService = new FeishuService(serviceConfig);
+  }
+
+  protected async doInitialize(): Promise<void> {
+    log.info('Initializing Feishu adapter...');
+
+    this.eventDispatcher = new lark.EventDispatcher({
+      verificationToken: this.feishuConfig.verificationToken,
+      encryptKey: this.feishuConfig.encryptKey,
+    });
+
+    this.eventDispatcher.register({
+      'im.message.receive_v1': (data: unknown) => {
+        log.debug('Received message event via WebSocket');
+        this.handleWebSocketMessage(data);
+      },
+      'im.message.card.action': (data: unknown) => {
+        log.debug('Received card action event');
+        this.handleCardAction(data);
+      },
+    });
+
+    this.wsClient = new lark.WSClient({
+      appId: this.feishuConfig.appId,
+      appSecret: this.feishuConfig.appSecret,
+      domain: this.feishuConfig.useLark ? lark.Domain.Lark : lark.Domain.Feishu,
+    });
+
+    await this.wsClient.start({
+      eventDispatcher: this.eventDispatcher,
+    });
+
+    log.info('Feishu adapter initialized, waiting for messages...');
+  }
+
+  async send(
+    response: UnifiedResponse,
+    context: MessageContext,
+  ): Promise<void> {
+    const receiveId = context.metadata.chatId as string;
+    const originalMessageId = context.metadata.originalMessageId as string;
+
+    if (!receiveId) {
+      log.error('No chatId in context');
+      return;
+    }
+
+    const textContent = this.extractTextContent(response);
+
+    if (originalMessageId) {
+      await this.feishuService.replyMessage(
+        originalMessageId,
+        'text',
+        JSON.stringify({ text: textContent }),
+      );
+    } else {
+      await this.feishuService.sendTextMessage(
+        receiveId,
+        'chat_id',
+        textContent,
+      );
+    }
+  }
+
+  async sendStream(event: StreamEvent, context: MessageContext): Promise<void> {
+    if (!this.feishuConfig.enableStreamingCard) {
+      if (event.type === 'done' && event.response) {
+        await this.send(event.response, context);
+      }
+      return;
+    }
+
+    const receiveId = context.metadata.chatId as string;
+
+    switch (event.type) {
+      case 'start':
+        this.streamingCardContent = '';
+        this.streamingCardMessageId = null;
+        break;
+
+      case 'delta':
+        if (event.delta) {
+          this.streamingCardContent += event.delta;
+          await this.updateStreamingCard(receiveId);
+        }
+        break;
+
+      case 'done':
+        if (this.streamingCardMessageId) {
+          await this.feishuService.updateStreamingCard({
+            messageId: this.streamingCardMessageId,
+            content: this.streamingCardContent,
+            done: true,
+          });
+        } else if (event.response) {
+          await this.send(event.response, context);
+        }
+        this.streamingCardMessageId = null;
+        break;
+
+      case 'error':
+        log.error('Stream error:', event.error);
+        if (this.streamingCardMessageId) {
+          await this.feishuService.updateCardMessage(
+            this.streamingCardMessageId,
+            this.feishuService.buildStreamingCard(
+              '错误',
+              `发生错误: ${event.error}`,
+              true,
+            ),
+          );
+        }
+        this.streamingCardMessageId = null;
+        break;
+    }
+  }
+
+  protected async doClose(): Promise<void> {
+    if (this.wsClient) {
+      this.wsClient.close();
+      this.wsClient = null;
+    }
+    log.info('Feishu adapter closed');
+  }
+
+  getFeishuService(): FeishuService {
+    return this.feishuService;
+  }
+
+  private async handleWebSocketMessage(event: unknown): Promise<void> {
+    log.debug('Received WebSocket event:', JSON.stringify(event));
+
+    const feishuEvent = event as {
+      type?: string;
+      event_type?: string;
+      [key: string]: unknown;
+    };
+
+    const isMessageEvent =
+      feishuEvent.type === 'im.message.receive_v1' ||
+      feishuEvent.event_type === 'im.message.receive_v1' ||
+      feishuEvent.event;
+
+    if (isMessageEvent) {
+      const messageEvent = this.parseMessageEvent(feishuEvent);
+      if (messageEvent) {
+        await this.processFeishuMessage(messageEvent);
+      } else {
+        log.warn('Failed to parse message event');
+      }
+    }
+  }
+
+  private async handleCardAction(event: unknown): Promise<void> {
+    try {
+      const cardEvent = event as {
+        action?: {
+          value?: Record<string, string>;
+        };
+        message?: {
+          message_id?: string;
+          chat_id?: string;
+        };
+      };
+
+      const actionValue = cardEvent.action?.value;
+      if (actionValue?.action === 'stop') {
+        const messageId = cardEvent.message?.message_id;
+        log.info('Stop button clicked for message:', messageId);
+
+        if (messageId) {
+          const renderer = this.activeRenderers.get(messageId);
+          if (renderer) {
+            renderer.abort();
+            await renderer.onAborted();
+            this.activeRenderers.delete(messageId);
+          }
+        }
+      }
+    } catch (error) {
+      log.error('Failed to handle card action:', error);
+    }
+  }
+
+  private parseMessageEvent(event: unknown): FeishuMessageEvent | null {
+    try {
+      const e = event as {
+        event?: {
+          sender?: {
+            sender_id?: {
+              union_id?: string;
+              user_id?: string;
+              open_id?: string;
+            };
+            sender_type?: string;
+            tenant_key?: string;
+          };
+          message?: {
+            message_id?: string;
+            root_id?: string;
+            parent_id?: string;
+            create_time?: string;
+            chat_id?: string;
+            message_type?: string;
+            content?: string;
+          };
+          chat_type?: string;
+          tenant_key?: string;
+        };
+        message?: {
+          message_id?: string;
+          root_id?: string;
+          parent_id?: string;
+          create_time?: string;
+          chat_id?: string;
+          chat_type?: string;
+          message_type?: string;
+          content?: string;
+        };
+        sender?: {
+          sender_id?: { union_id?: string; user_id?: string; open_id?: string };
+          sender_type?: string;
+          tenant_key?: string;
+        };
+        chat_type?: string;
+        tenant_key?: string;
+      };
+
+      const sender = e.event?.sender ?? e.sender;
+      const message = e.event?.message ?? e.message;
+      const chatType =
+        e.event?.chat_type ?? e.chat_type ?? e.message?.chat_type;
+      const tenantKey = e.event?.tenant_key ?? e.tenant_key;
+
+      if (!sender || !message) {
+        log.warn('Missing sender or message in event');
+        return null;
+      }
+
+      return {
+        type: 'im.message.receive_v1',
+        msgType: message.message_type ?? 'text',
+        content: message.content ?? '',
+        messageId: message.message_id ?? '',
+        rootId: message.root_id,
+        parentId: message.parent_id,
+        sender: {
+          senderId: {
+            unionId: sender.sender_id?.union_id ?? '',
+            userId: sender.sender_id?.user_id ?? '',
+            openId: sender.sender_id?.open_id ?? '',
+          },
+          senderType: sender.sender_type ?? '',
+          tenantKey: sender.tenant_key ?? '',
+        },
+        message: {
+          chatId: message.chat_id ?? '',
+          messageType: message.message_type ?? '',
+          content: message.content ?? '',
+          createTime: Number(message.create_time) || Date.now(),
+          updateTime: Date.now(),
+        },
+        chatType: (chatType as 'p2p' | 'group') ?? 'p2p',
+        tenantKey: tenantKey ?? '',
+      };
+    } catch (error) {
+      log.error('Failed to parse message event:', error);
+      return null;
+    }
+  }
+
+  private async processFeishuMessage(event: FeishuMessageEvent): Promise<void> {
+    if (!this.messageHandler) {
+      log.error('No message handler set');
+      return;
+    }
+
+    const unifiedMessage = this.toUnifiedMessage(event);
+    let typingReactionId: string | null = null;
+
+    try {
+      log.info('Adding typing indicator...');
+      typingReactionId = await this.feishuService.addTypingIndicator(
+        event.messageId,
+      );
+      log.info('Typing reaction ID:', typingReactionId);
+
+      // 默认使用 Markdown 文本回复
+      // 只有当需要复杂交互（工具调用、思考过程）时才使用卡片
+      if (this.feishuConfig.enableStreamingCard) {
+        const cardClient = new FeishuCardClient(this.feishuService);
+        const renderer = new StreamingCardRenderer(
+          cardClient,
+          event.message.chatId,
+          event.messageId,
+        );
+
+        if (event.sender.senderId.openId) {
+          renderer.setMentionUser(event.sender.senderId.openId);
+        }
+
+        const abortController = new AbortController();
+        renderer.setAbortCallback(() => {
+          abortController.abort();
+        });
+
+        this.activeRenderers.set(event.messageId, renderer);
+
+        await renderer.init();
+
+        let hasComplexContent = false;
+
+        await this.messageHandler(unifiedMessage, {
+          onThinking: async (text: string) => {
+            hasComplexContent = true;
+            await renderer.onThinking(text);
+          },
+          onThinkingStop: async () => {
+            await renderer.onThinkingStop();
+          },
+          onToolStart: async (
+            toolName: string,
+            input: Record<string, unknown> | undefined,
+            parentToolUseId?: string | null,
+            toolUseId?: string,
+          ) => {
+            hasComplexContent = true;
+            await renderer.onToolStart(
+              toolName,
+              input,
+              parentToolUseId ?? null,
+              toolUseId,
+            );
+          },
+          onToolEnd: async (
+            toolName: string,
+            output: string,
+            parentToolUseId?: string | null,
+          ) => {
+            await renderer.onToolEnd(toolName, output, parentToolUseId ?? null);
+          },
+          onContentDelta: async (delta: string) => {
+            await renderer.onContentDelta(delta);
+          },
+          onComplete: async () => {
+            await renderer.onComplete();
+            this.activeRenderers.delete(event.messageId);
+          },
+          onError: async (error: string) => {
+            await renderer.onError(error);
+            this.activeRenderers.delete(event.messageId);
+          },
+        });
+
+        // 如果没有复杂内容，删除预创建的空卡片，改用 Markdown 文本
+        if (!hasComplexContent) {
+          // 卡片会被保留显示，因为用户可能已经看到了
+        }
+      } else {
+        const response = await this.messageHandler(unifiedMessage);
+
+        if (typingReactionId) {
+          await this.feishuService.removeTypingIndicator(
+            event.messageId,
+            typingReactionId,
+          );
+        }
+
+        await this.send(response, unifiedMessage.context);
+      }
+
+      if (typingReactionId) {
+        await this.feishuService.removeTypingIndicator(
+          event.messageId,
+          typingReactionId,
+        );
+      }
+    } catch (error) {
+      log.error('Failed to process message:', error);
+
+      if (typingReactionId) {
+        await this.feishuService.removeTypingIndicator(
+          event.messageId,
+          typingReactionId,
+        );
+      }
+
+      await this.sendError(unifiedMessage.context, String(error));
+    }
+  }
+
+  private toUnifiedMessage(event: FeishuMessageEvent): UnifiedMessage {
+    const content = this.parseFeishuContent(event.msgType, event.content);
+    const isGroup = event.chatType === 'group';
+
+    return {
+      id: event.messageId,
+      context: {
+        channel: 'feishu',
+        userId: event.sender.senderId.openId,
+        sessionId: isGroup
+          ? event.message.chatId
+          : event.sender.senderId.openId,
+        groupId: isGroup ? event.message.chatId : undefined,
+        dmId: isGroup ? undefined : event.sender.senderId.openId,
+        originalMessageId: event.messageId,
+        metadata: {
+          chatId: event.message.chatId,
+          originalMessageId: event.messageId,
+          tenantKey: event.tenantKey,
+          msgType: event.msgType,
+        },
+      },
+      content,
+      timestamp: event.message.createTime,
+      stream: this.feishuConfig.enableStreamingCard,
+    };
+  }
+
+  private parseFeishuContent(
+    msgType: string,
+    rawContent: string,
+  ): ContentBlock[] {
+    try {
+      const parsed = JSON.parse(rawContent);
+
+      switch (msgType) {
+        case 'text':
+          return [{ type: 'text', text: parsed.text || rawContent }];
+        case 'post':
+          return this.parseRichText(parsed);
+        case 'image':
+          return [{ type: 'image', url: parsed.image_key }];
+        case 'file':
+          return [
+            {
+              type: 'file',
+              url: parsed.file_key,
+              name: parsed.file_name || 'unknown',
+            },
+          ];
+        default:
+          return [{ type: 'text', text: rawContent }];
+      }
+    } catch {
+      return [{ type: 'text', text: rawContent }];
+    }
+  }
+
+  private parseRichText(parsed: {
+    rich_text?: Array<Array<{ tag?: string; text?: string; href?: string }>>;
+  }): ContentBlock[] {
+    const blocks: ContentBlock[] = [];
+
+    if (parsed.rich_text) {
+      for (const paragraph of parsed.rich_text) {
+        const text = paragraph
+          .filter((el) => el.tag === 'text')
+          .map((el) => el.text || '')
+          .join('');
+
+        if (text) {
+          blocks.push({ type: 'text', text });
+        }
+      }
+    }
+
+    return blocks.length > 0 ? blocks : [{ type: 'text', text: '' }];
+  }
+
+  private extractTextContent(response: UnifiedResponse): string {
+    const parts: string[] = [];
+
+    for (const block of response.content) {
+      switch (block.type) {
+        case 'text':
+          parts.push(block.text);
+          break;
+        case 'markdown':
+          parts.push(block.text);
+          break;
+        case 'card':
+          if (block.title) {
+            parts.push(`### ${block.title}`);
+          }
+          parts.push(block.content);
+          break;
+      }
+    }
+
+    return parts.join('\n');
+  }
+
+  private async updateStreamingCard(chatId: string): Promise<void> {
+    if (!this.streamingCardMessageId) {
+      const response = await this.feishuService.sendCardMessage(
+        chatId,
+        'chat_id',
+        this.feishuService.buildStreamingCard(
+          'AI 助手',
+          this.streamingCardContent,
+          false,
+        ),
+      );
+      this.streamingCardMessageId = response.messageId;
+    } else {
+      await this.feishuService.updateStreamingCard({
+        messageId: this.streamingCardMessageId,
+        content: this.streamingCardContent,
+        done: false,
+      });
+    }
+  }
+}
+
+export function createFeishuAdapter(
+  config: FeishuAdapterConfig,
+): FeishuChannelAdapter {
+  return new FeishuChannelAdapter(config);
+}

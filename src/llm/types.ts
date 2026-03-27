@@ -36,8 +36,6 @@ export type ContentBlock =
   | ImageBlock;
 
 // Message type (internal format mirrors Anthropic)
-// Note: We use ContentBlock[] internally for all messages.
-// String content should be converted to [{ type: 'text', text: content }] before use.
 export interface Message {
   role: 'user' | 'assistant';
   content: Array<ContentBlock>;
@@ -64,6 +62,26 @@ export interface LLMResponse {
   };
 }
 
+// Agent callbacks for streaming card rendering
+export interface AgentCallbacks {
+  onThinking?: (text: string) => void;
+  onThinkingStop?: () => void;
+  onToolStart?: (
+    toolName: string,
+    input: Record<string, unknown> | undefined,
+    parentToolUseId?: string | null,
+    toolUseId?: string,
+  ) => void;
+  onToolEnd?: (
+    toolName: string,
+    output: string,
+    parentToolUseId?: string | null,
+  ) => void;
+  onContentDelta?: (delta: string) => void;
+  onComplete?: () => void;
+  onError?: (error: string) => void;
+}
+
 // LLM Client interface
 export interface LLMClient {
   chat(
@@ -78,6 +96,7 @@ export interface LLMClient {
     tools: ToolSchema[],
     systemPrompt: string | undefined,
     onChunk: (text: string) => void,
+    onThinking?: (thinking: string) => void,
     signal?: AbortSignal,
   ): Promise<LLMResponse>;
 }

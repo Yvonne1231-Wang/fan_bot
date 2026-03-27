@@ -154,6 +154,12 @@ You have access to tools to help complete tasks. When given a task:
 2. Use tools when they would help (don't use tools for things you can answer directly)
 3. Be concise and clear in your responses
 
+**IMPORTANT - When to use web_search:**
+- Questions about current events, news, or real-time information
+- Questions about specific products, services, or technologies (like "openclaw如何接入微信机器人")
+- Questions where you don't have definitive knowledge
+- ALWAYS search the web when asked about how to integrate or use specific software/SDKs
+
 Available tools will be described separately. Always prefer completing tasks over asking clarifying questions unless the task is genuinely ambiguous.`;
   } else {
     base = `You are ${identity.name}, a helpful AI assistant with access to tools.
@@ -162,6 +168,12 @@ When given a task:
 1. Think through what needs to be done
 2. Use tools when they would help (don't use tools for things you can answer directly)
 3. Be concise and clear in your responses
+
+**IMPORTANT - When to use web_search:**
+- Questions about current events, news, or real-time information
+- Questions about specific products, services, or technologies
+- Questions where you don't have definitive knowledge
+- ALWAYS search the web when asked about how to integrate or use specific software/SDKs
 
 Available tools will be described separately. Always prefer completing tasks over asking clarifying questions unless the task is genuinely ambiguous.`;
   }
