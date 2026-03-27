@@ -3,9 +3,6 @@ node_modules/
 
 # Build output
 dist/
-*.js
-*.d.ts
-!src/**/*.d.ts
 
 # Environment
 .env
@@ -30,6 +27,12 @@ Thumbs.db
 sessions/
 .memory/
 docs/
+
+# Agent private files (use .example as templates)
+SOUL.md
+IDENTITY.md
+AGENTS.md
+CLAUDE.md
 
 # Test
 coverage/
