@@ -44,7 +44,7 @@ export async function summarizeMessages(
         .map((c) => {
           const content =
             typeof c.content === 'string' ? c.content : '[complex result]';
-          return `[Tool result: ${content.slice(0, 100)}...]`;
+          return `[Tool result: ${content.slice(0, 1000)}...]`;
         })
         .join('\n');
       return `${role}: ${text}${toolInfo ? '\n' + toolInfo : ''}${resultInfo ? '\n' + resultInfo : ''}`;

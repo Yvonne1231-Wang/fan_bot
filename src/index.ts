@@ -74,6 +74,7 @@ async function main(): Promise<void> {
  */
 async function startHTTPServer(): Promise<void> {
   const port = Number(process.env.HTTP_PORT) || DEFAULT_HTTP_PORT;
+  const userId = await getUserId();
   const llmClient = createLLMClientFromEnv();
   const sessionManager = createSessionManager({
     store: new JSONLStore({ dir: DEFAULT_SESSION_DIR }),
@@ -81,6 +82,8 @@ async function startHTTPServer(): Promise<void> {
   });
 
   initMemoryWithLLM(llmClient);
+  const memory = getMemory();
+  memory.setUserId(userId);
 
   registerTool(calculatorTool);
   registerTool(readFileTool);
@@ -115,8 +118,21 @@ async function startHTTPServer(): Promise<void> {
         try {
           const compressed = await sessionManager.compress(result.messages);
           await sessionManager.save(sid, compressed);
+
+          if (result.messages.length >= 2) {
+            const extraction = await extractMemories(
+              result.messages.slice(-2),
+              llmClient,
+              memory,
+            );
+            if (extraction.extracted.length > 0) {
+              log.info(
+                `Background: Auto-extracted ${extraction.extracted.length} memories`,
+              );
+            }
+          }
         } catch (error) {
-          log.error(`Background compression failed: ${error}`);
+          log.error(`Background processing failed: ${error}`);
         }
       });
 
@@ -257,7 +273,7 @@ async function startCLITransport(
 
         if (result.messages.length >= 2) {
           const extraction = await extractMemories(
-            result.messages,
+            result.messages.slice(-2),
             llmClient,
             memory,
           );

@@ -60,7 +60,6 @@ Task: ${goal}`)],
 
 export function shouldPlan(message: string): boolean {
   if (message.startsWith('/plan ')) return true;
-  if (message.length > 200) return true;
   const multiStepWords = ['先', '然后', '最后', '再', 'then', 'after', 'finally', 'step'];
   return multiStepWords.some(w => message.toLowerCase().includes(w));
 }
