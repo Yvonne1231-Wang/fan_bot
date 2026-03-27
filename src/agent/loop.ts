@@ -7,7 +7,9 @@ import type {
   ToolUseBlock,
 } from '../llm/types.js';
 import type { ToolRegistry } from '../tools/types.js';
+import type { MemoryService } from '../memory/types.js';
 import { createDebug } from '../utils/debug.js';
+import { extractMemories } from './memory_extractor.js';
 
 const log = createDebug('agent:loop');
 
@@ -17,32 +19,17 @@ const log = createDebug('agent:loop');
  * Options for running the agent loop.
  */
 export interface RunAgentOptions {
-  /** User input prompt */
   prompt: string;
-
-  /** LLM client for making API calls */
   llmClient: LLMClient;
-
-  /** Tool registry for dispatching tool calls */
   toolRegistry: ToolRegistry;
-
-  /** Optional initial messages (for continuing a session) */
   initialMessages?: Message[];
-
-  /** Maximum number of iterations (default: 10) */
   maxIterations?: number;
-
-  /** Optional system prompt for LLM */
   systemPrompt?: string;
-
-  /** Optional callback for streaming text output */
   onText?: (delta: string) => void;
-
-  /** Optional confirmation callback for high-risk tools */
   confirmFn?: (preview: string) => Promise<boolean>;
-
-  /** Optional abort signal for cancellation */
   abortSignal?: AbortSignal;
+  memory?: MemoryService;
+  autoExtractMemory?: boolean;
 }
 
 /**

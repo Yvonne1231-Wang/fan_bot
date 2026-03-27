@@ -13,6 +13,7 @@ const log = createDebug('memory:lancedb');
 
 type InternalRecord = Record<string, unknown> & {
   id: string;
+  userId: string;
   key: string;
   value: string;
   text: string;
@@ -40,10 +41,16 @@ export class LanceDBMemoryService implements MemoryService {
   private llmClient: LLMClient | null = null;
   private dbPath: string;
   private initPromise: Promise<void> | null = null;
+  private currentUserId: string = 'default';
 
   constructor(dbPath: string = '.memory/lancedb', llmClient?: LLMClient) {
     this.dbPath = dbPath;
     this.llmClient = llmClient || null;
+  }
+
+  setUserId(userId: string): void {
+    this.currentUserId = userId;
+    log.debug(`Set current user: ${userId}`);
   }
 
   setLLMClient(client: LLMClient): void {
@@ -80,6 +87,7 @@ export class LanceDBMemoryService implements MemoryService {
       const seedData: InternalRecord[] = [
         {
           id: '__seed__',
+          userId: '__seed__',
           key: '__seed__',
           value: '__seed__',
           text: '__seed__',
@@ -160,6 +168,12 @@ export class LanceDBMemoryService implements MemoryService {
     if (record.validFrom > atTime) return false;
     if (record.validUntil !== 0 && record.validUntil < atTime) return false;
     return true;
+  }
+
+  private matchesUser(record: InternalRecord, userId?: string): boolean {
+    const targetUser = userId || this.currentUserId;
+    if (record.scope === 'global') return true;
+    return record.userId === targetUser;
   }
 
   private rrfMerge(
@@ -279,7 +293,9 @@ Only output the scores, nothing else.`;
     await this.initialize();
     if (!this.table) throw new Error('Table not initialized');
 
-    log.debug(`Remembering: ${key} = ${value} (scope: ${scope})`);
+    log.debug(
+      `Remembering: ${key} = ${value} (scope: ${scope}, user: ${this.currentUserId})`,
+    );
 
     const text = `${key}: ${value}`;
     const vector = await this.embed(text);
@@ -288,7 +304,7 @@ Only output the scores, nothing else.`;
     const validRecords = (await this.table
       .query()
       .where(
-        `key = '${this.escapeSQL(key)}' AND scope = '${scope}' AND validUntil = 0`,
+        `key = '${this.escapeSQL(key)}' AND scope = '${scope}' AND userId = '${this.escapeSQL(this.currentUserId)}' AND validUntil = 0`,
       )
       .toArray()) as InternalRecord[];
 
@@ -306,6 +322,7 @@ Only output the scores, nothing else.`;
 
       const newRecord: InternalRecord = {
         id: newId,
+        userId: this.currentUserId,
         key,
         value,
         text,
@@ -324,6 +341,7 @@ Only output the scores, nothing else.`;
     const id = crypto.randomUUID();
     const record: InternalRecord = {
       id,
+      userId: this.currentUserId,
       key,
       value,
       text,
@@ -343,9 +361,11 @@ Only output the scores, nothing else.`;
     await this.initialize();
     if (!this.table) throw new Error('Table not initialized');
 
-    log.debug(`Forgetting: ${key} (scope: ${scope || 'all'})`);
+    log.debug(
+      `Forgetting: ${key} (scope: ${scope || 'all'}, user: ${this.currentUserId})`,
+    );
 
-    let whereClause = `key = '${this.escapeSQL(key)}' AND validUntil = 0`;
+    let whereClause = `key = '${this.escapeSQL(key)}' AND userId = '${this.escapeSQL(this.currentUserId)}' AND validUntil = 0`;
     if (scope) {
       whereClause += ` AND scope = '${scope}'`;
     }
@@ -361,7 +381,7 @@ Only output the scores, nothing else.`;
         where: `id = '${record.id}'`,
         values: {
           validUntil: now,
-          supersededBy: null,
+          supersededBy: '',
         },
       });
     }
@@ -377,6 +397,7 @@ Only output the scores, nothing else.`;
     const topK = opts?.topK ?? 5;
     const scope = opts?.scope;
     const useRerank = opts?.rerank ?? false;
+    const targetUserId = opts?.userId || this.currentUserId;
     const atTime = opts?.atTime
       ? typeof opts.atTime === 'number'
         ? opts.atTime
@@ -384,7 +405,7 @@ Only output the scores, nothing else.`;
       : Date.now();
 
     log.debug(
-      `Advanced search: "${query}" (topK: ${topK}, scope: ${scope}, rerank: ${useRerank}, atTime: ${new Date(atTime).toISOString()})`,
+      `Advanced search: "${query}" (topK: ${topK}, scope: ${scope}, user: ${targetUserId}, rerank: ${useRerank})`,
     );
 
     const queryVector = await this.embed(query);
@@ -396,6 +417,9 @@ Only output the scores, nothing else.`;
 
     vectorResults = vectorResults.filter((r) => r.id !== '__seed__');
     vectorResults = vectorResults.filter((r) => this.isValidAtTime(r, atTime));
+    vectorResults = vectorResults.filter((r) =>
+      this.matchesUser(r, targetUserId),
+    );
     if (scope) {
       vectorResults = vectorResults.filter((r) => r.scope === scope);
     }
@@ -412,6 +436,9 @@ Only output the scores, nothing else.`;
           .toArray()) as InternalRecord[];
         allRecords = allRecords.filter((r) => r.id !== '__seed__');
         allRecords = allRecords.filter((r) => this.isValidAtTime(r, atTime));
+        allRecords = allRecords.filter((r) =>
+          this.matchesUser(r, targetUserId),
+        );
         if (scope) {
           allRecords = allRecords.filter((r) => r.scope === scope);
         }
@@ -456,6 +483,7 @@ Only output the scores, nothing else.`;
 
     return finalResults.map((r) => ({
       id: r.record.id,
+      userId: r.record.userId,
       key: r.record.key,
       value: r.record.value,
       text: r.record.text,
@@ -473,6 +501,7 @@ Only output the scores, nothing else.`;
     let records = (await this.table.query().toArray()) as InternalRecord[];
     records = records.filter((r) => r.id !== '__seed__');
     records = records.filter((r) => r.validUntil === 0);
+    records = records.filter((r) => this.matchesUser(r));
 
     if (scope) {
       records = records.filter((r) => r.scope === scope);
@@ -480,6 +509,7 @@ Only output the scores, nothing else.`;
 
     return records.map((r) => ({
       id: r.id,
+      userId: r.userId,
       key: r.key,
       value: r.value,
       text: r.text,
@@ -517,6 +547,7 @@ Only output the scores, nothing else.`;
     const r = records[0];
     return {
       id: r.id,
+      userId: r.userId,
       key: r.key,
       value: r.value,
       text: r.text,
@@ -542,7 +573,7 @@ Only output the scores, nothing else.`;
     await this.initialize();
     if (!this.table) throw new Error('Table not initialized');
 
-    let whereClause = `key = '${this.escapeSQL(key)}'`;
+    let whereClause = `key = '${this.escapeSQL(key)}' AND userId = '${this.escapeSQL(this.currentUserId)}'`;
     if (scope) {
       whereClause += ` AND scope = '${scope}'`;
     }
@@ -557,6 +588,7 @@ Only output the scores, nothing else.`;
       .sort((a, b) => b.validFrom - a.validFrom)
       .map((r) => ({
         id: r.id,
+        userId: r.userId,
         key: r.key,
         value: r.value,
         text: r.text,
@@ -588,7 +620,9 @@ Only output the scores, nothing else.`;
 
     const records = (await this.table
       .query()
-      .where(`key = '${this.escapeSQL(key)}' AND validUntil = 0`)
+      .where(
+        `key = '${this.escapeSQL(key)}' AND userId = '${this.escapeSQL(this.currentUserId)}' AND validUntil = 0`,
+      )
       .limit(1)
       .toArray()) as InternalRecord[];
 

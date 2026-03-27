@@ -1,7 +1,6 @@
 // ─── Session Module ─────────────────────────────────────────────────────────
 
 export {
-  // Types
   type Session,
   type SessionMeta,
   type SessionStore,
@@ -10,5 +9,15 @@ export {
 } from './types.js';
 
 export { JSONLStore, type JSONLStoreOptions } from './store.js';
-
-export { SessionManagerImpl, createSessionManager } from './manager.js';
+export {
+  SessionManagerImpl,
+  createSessionManager,
+  type CompressionConfig,
+} from './manager.js';
+export {
+  summarizeMessages,
+  createSummaryMessage,
+  isSummaryMessage,
+  estimateTokens,
+  type SummaryMessage,
+} from './summarizer.js';

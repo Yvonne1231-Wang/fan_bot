@@ -11,6 +11,7 @@ import type {
 interface StoredFact {
   value: string;
   scope: Scope;
+  userId: string;
   validFrom: number;
   validUntil: number;
 }
@@ -18,9 +19,14 @@ interface StoredFact {
 export class JsonMemoryService implements MemoryService {
   private factsPath: string;
   private facts: Map<string, StoredFact> = new Map();
+  private currentUserId: string = 'default';
 
   constructor(dir: string = '.memory') {
     this.factsPath = join(dir, 'facts.json');
+  }
+
+  setUserId(userId: string): void {
+    this.currentUserId = userId;
   }
 
   private async ensureDir(): Promise<void> {
@@ -52,6 +58,12 @@ export class JsonMemoryService implements MemoryService {
     return true;
   }
 
+  private matchesUser(fact: StoredFact, userId?: string): boolean {
+    const targetUser = userId || this.currentUserId;
+    if (fact.scope === 'global') return true;
+    return fact.userId === targetUser;
+  }
+
   async setFact(key: string, value: string): Promise<void> {
     await this.remember(key, value, 'user');
   }
@@ -59,7 +71,7 @@ export class JsonMemoryService implements MemoryService {
   async getFact(key: string): Promise<string | null> {
     await this.loadFacts();
     const fact = this.facts.get(key);
-    if (!fact || fact.validUntil !== 0) return null;
+    if (!fact || fact.validUntil !== 0 || !this.matchesUser(fact)) return null;
     return fact.value;
   }
 
@@ -107,10 +119,11 @@ export class JsonMemoryService implements MemoryService {
   ): Promise<MemoryRecord> {
     await this.loadFacts();
     const now = Date.now();
+    const factKey = `${this.currentUserId}:${key}`;
 
-    const existing = this.facts.get(key);
+    const existing = this.facts.get(factKey);
     if (existing && existing.validUntil === 0) {
-      this.facts.set(key, {
+      this.facts.set(factKey, {
         ...existing,
         validUntil: now,
       });
@@ -119,14 +132,16 @@ export class JsonMemoryService implements MemoryService {
     const record: StoredFact = {
       value,
       scope,
+      userId: this.currentUserId,
       validFrom: now,
       validUntil: 0,
     };
-    this.facts.set(key, record);
+    this.facts.set(factKey, record);
     await this.saveFacts();
 
     return {
-      id: key,
+      id: factKey,
+      userId: this.currentUserId,
       key,
       value,
       text: `${key}: ${value}`,
@@ -142,10 +157,11 @@ export class JsonMemoryService implements MemoryService {
 
   async forget(key: string, scope?: Scope): Promise<void> {
     await this.loadFacts();
-    const fact = this.facts.get(key);
+    const factKey = `${this.currentUserId}:${key}`;
+    const fact = this.facts.get(factKey);
     if (fact && (scope === undefined || fact.scope === scope)) {
       if (fact.validUntil === 0) {
-        this.facts.set(key, {
+        this.facts.set(factKey, {
           ...fact,
           validUntil: Date.now(),
         });
@@ -161,6 +177,7 @@ export class JsonMemoryService implements MemoryService {
     await this.loadFacts();
     const topK = opts?.topK ?? 5;
     const scope = opts?.scope;
+    const targetUserId = opts?.userId || this.currentUserId;
     const atTime = opts?.atTime
       ? typeof opts.atTime === 'number'
         ? opts.atTime
@@ -170,10 +187,14 @@ export class JsonMemoryService implements MemoryService {
     const queryWords = query.toLowerCase().split(/\s+/).filter(Boolean);
     const results: SearchResult[] = [];
 
-    for (const [key, fact] of this.facts.entries()) {
+    for (const [factKey, fact] of this.facts.entries()) {
       if (!this.isValidAtTime(fact, atTime)) continue;
+      if (!this.matchesUser(fact, targetUserId)) continue;
       if (scope && fact.scope !== scope) continue;
 
+      const key = factKey.includes(':')
+        ? factKey.split(':').slice(1).join(':')
+        : factKey;
       const combined = `${key} ${fact.value}`.toLowerCase();
       let matches = 0;
       for (const word of queryWords) {
@@ -181,7 +202,8 @@ export class JsonMemoryService implements MemoryService {
       }
       if (matches > 0) {
         results.push({
-          id: key,
+          id: factKey,
+          userId: fact.userId,
           key,
           value: fact.value,
           text: `${key}: ${fact.value}`,
@@ -202,20 +224,27 @@ export class JsonMemoryService implements MemoryService {
 
     return Array.from(this.facts.entries())
       .filter(([, fact]) => fact.validUntil === 0)
+      .filter(([, fact]) => this.matchesUser(fact))
       .filter(([, fact]) => !scope || fact.scope === scope)
-      .map(([key, fact]) => ({
-        id: key,
-        key,
-        value: fact.value,
-        text: `${key}: ${fact.value}`,
-        vector: [],
-        scope: fact.scope,
-        createdAt: fact.validFrom,
-        updatedAt: now,
-        validFrom: fact.validFrom,
-        validUntil: fact.validUntil,
-        supersededBy: '',
-      }));
+      .map(([factKey, fact]) => {
+        const key = factKey.includes(':')
+          ? factKey.split(':').slice(1).join(':')
+          : factKey;
+        return {
+          id: factKey,
+          userId: fact.userId,
+          key,
+          value: fact.value,
+          text: `${key}: ${fact.value}`,
+          vector: [],
+          scope: fact.scope,
+          createdAt: fact.validFrom,
+          updatedAt: now,
+          validFrom: fact.validFrom,
+          validUntil: fact.validUntil,
+          supersededBy: '',
+        };
+      });
   }
 
   async stats(): Promise<Record<Scope, number>> {
@@ -232,11 +261,13 @@ export class JsonMemoryService implements MemoryService {
     const fact = this.facts.get(id);
     if (!fact) return null;
 
+    const key = id.includes(':') ? id.split(':').slice(1).join(':') : id;
     return {
       id,
-      key: id,
+      userId: fact.userId,
+      key,
       value: fact.value,
-      text: `${id}: ${fact.value}`,
+      text: `${key}: ${fact.value}`,
       vector: [],
       scope: fact.scope,
       createdAt: fact.validFrom,
@@ -248,18 +279,28 @@ export class JsonMemoryService implements MemoryService {
   }
 
   async deleteById(id: string): Promise<void> {
-    await this.forget(id);
+    await this.loadFacts();
+    const fact = this.facts.get(id);
+    if (fact && this.matchesUser(fact)) {
+      this.facts.set(id, {
+        ...fact,
+        validUntil: Date.now(),
+      });
+      await this.saveFacts();
+    }
   }
 
   async getHistory(key: string, scope?: Scope): Promise<MemoryRecord[]> {
     await this.loadFacts();
-    const fact = this.facts.get(key);
+    const factKey = `${this.currentUserId}:${key}`;
+    const fact = this.facts.get(factKey);
     if (!fact) return [];
     if (scope && fact.scope !== scope) return [];
 
     return [
       {
-        id: key,
+        id: factKey,
+        userId: fact.userId,
         key,
         value: fact.value,
         text: `${key}: ${fact.value}`,

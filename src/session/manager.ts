@@ -1,5 +1,3 @@
-// ─── Session Manager Implementation ─────────────────────────────────────────
-
 import type {
   SessionManager,
   SessionManagerOptions,
@@ -8,37 +6,50 @@ import type {
   Session,
   Message,
 } from './types.js';
+import type { LLMClient } from '../llm/types.js';
+import {
+  summarizeMessages,
+  createSummaryMessage,
+  isSummaryMessage,
+  estimateTokens,
+} from './summarizer.js';
+import { createDebug } from '../utils/debug.js';
 
-// ─── Constants ──────────────────────────────────────────────────────────────
+const log = createDebug('session:manager');
 
-/** Default maximum context messages before pruning */
 const DEFAULT_MAX_CONTEXT_MESSAGES = 40;
+const DEFAULT_MAX_TOKENS = 100000;
+const FRESH_ZONE_SIZE = 10;
+const COMPRESS_BATCH_SIZE = 10;
 
-// ─── Session Manager Implementation ─────────────────────────────────────────
+export interface CompressionConfig {
+  maxTokens?: number;
+  freshZoneSize?: number;
+  compressBatchSize?: number;
+}
 
-/**
- * Manages session lifecycle including loading, saving, and pruning.
- */
 export class SessionManagerImpl implements SessionManager {
   private readonly store: SessionStore;
   private readonly maxContextMessages: number;
   private readonly createdAtCache = new Map<string, number>();
+  private llmClient: LLMClient | null = null;
+  private compressionConfig: CompressionConfig;
 
   constructor(options: SessionManagerOptions) {
     this.store = options.store;
     this.maxContextMessages =
       options.maxContextMessages ?? DEFAULT_MAX_CONTEXT_MESSAGES;
+    this.compressionConfig = {};
   }
 
-  /**
-   * Load or create a session.
-   *
-   * If session exists, returns its messages.
-   * If not, creates an empty session and returns empty array.
-   *
-   * @param id - Session ID
-   * @returns Session messages
-   */
+  setLLMClient(client: LLMClient): void {
+    this.llmClient = client;
+  }
+
+  setCompressionConfig(config: CompressionConfig): void {
+    this.compressionConfig = { ...this.compressionConfig, ...config };
+  }
+
   async load(id: string): Promise<Message[]> {
     const session = await this.store.load(id);
 
@@ -50,14 +61,6 @@ export class SessionManagerImpl implements SessionManager {
     return [];
   }
 
-  /**
-   * Save session messages.
-   *
-   * Creates or updates the session with given messages.
-   *
-   * @param id - Session ID
-   * @param messages - Messages to save
-   */
   async save(id: string, messages: Message[]): Promise<void> {
     const now = Date.now();
     const createdAt = this.createdAtCache.get(id) ?? now;
@@ -75,17 +78,6 @@ export class SessionManagerImpl implements SessionManager {
     await this.store.save(session);
   }
 
-  /**
-   * Prune messages if they exceed context limit.
-   *
-   * Strategy:
-   * 1. Always keep first message (system context)
-   * 2. Keep most recent messages up to limit
-   * 3. Never split tool_use/tool_result pairs
-   *
-   * @param messages - Messages to prune
-   * @returns Pruned messages
-   */
   prune(messages: Message[]): Message[] {
     if (messages.length <= this.maxContextMessages) {
       return messages;
@@ -143,33 +135,67 @@ export class SessionManagerImpl implements SessionManager {
     return [firstMessage, ...keptFromEnd];
   }
 
-  /**
-   * List all sessions.
-   *
-   * @returns Array of session metadata, sorted by updated time (newest first)
-   */
+  async compress(messages: Message[]): Promise<Message[]> {
+    if (!this.llmClient) {
+      log.warn('No LLM client set, falling back to simple pruning');
+      return this.prune(messages);
+    }
+
+    const maxTokens = this.compressionConfig.maxTokens ?? DEFAULT_MAX_TOKENS;
+    const freshZoneSize = this.compressionConfig.freshZoneSize ?? FRESH_ZONE_SIZE;
+    const compressBatchSize = this.compressionConfig.compressBatchSize ?? COMPRESS_BATCH_SIZE;
+
+    const currentTokens = estimateTokens(messages);
+    if (currentTokens <= maxTokens) {
+      return messages;
+    }
+
+    log.info(`Compressing session: ${currentTokens} tokens > ${maxTokens} limit`);
+
+    const freshZone = messages.slice(-freshZoneSize);
+    const compressionZone = messages.slice(0, -freshZoneSize);
+
+    if (compressionZone.length === 0) {
+      return messages;
+    }
+
+    const existingSummaries = compressionZone.filter(isSummaryMessage);
+    const regularMessages = compressionZone.filter((m) => !isSummaryMessage(m));
+
+    if (regularMessages.length < compressBatchSize) {
+      return [...compressionZone, ...freshZone];
+    }
+
+    const toCompress = regularMessages.slice(0, compressBatchSize);
+    const remaining = regularMessages.slice(compressBatchSize);
+
+    log.debug(`Compressing ${toCompress.length} messages into summary`);
+
+    const summary = await summarizeMessages(toCompress, this.llmClient);
+    const summaryMessage = createSummaryMessage(
+      summary,
+      0,
+      compressBatchSize,
+      toCompress.length,
+    );
+
+    const compressed = [...existingSummaries, summaryMessage, ...remaining, ...freshZone];
+
+    const newTokens = estimateTokens(compressed);
+    log.info(`Compression complete: ${currentTokens} -> ${newTokens} tokens (${Math.round((1 - newTokens / currentTokens) * 100)}% reduction)`);
+
+    return compressed;
+  }
+
   async list(): Promise<SessionMeta[]> {
     return this.store.list();
   }
 
-  /**
-   * Delete a session.
-   *
-   * @param id - Session ID to delete
-   */
   async delete(id: string): Promise<void> {
     await this.store.delete(id);
   }
 }
 
-// ─── Factory Function ─────────────────────────────────────────────────────
-
-/**
- * Create a new SessionManager instance.
- *
- * @param options - Configuration options
- * @returns SessionManager instance
- */
 export function createSessionManager(
   options: SessionManagerOptions,
 ): SessionManager {

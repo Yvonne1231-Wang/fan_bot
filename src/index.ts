@@ -13,9 +13,11 @@ import {
   buildSystemPrompt,
   createPlan,
   shouldPlan,
+  extractMemories,
 } from './agent/index.js';
 import { createSessionManager, JSONLStore } from './session/index.js';
 import { getMemory, LanceDBMemoryService } from './memory/index.js';
+import { getUserId } from './user.js';
 import { registry, registerTool } from './tools/registry.js';
 import { calculatorTool } from './tools/calculator.js';
 import { readFileTool, writeFileTool, listDirTool } from './tools/files.js';
@@ -28,6 +30,9 @@ import {
   startHTTP,
   type InputHandler,
 } from './transport/index.js';
+import { createDebug } from './utils/debug.js';
+
+const log = createDebug('main');
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -104,8 +109,16 @@ async function startHTTPServer(): Promise<void> {
         }),
       });
 
-      const prunedMessages = sessionManager.prune(result.messages);
-      await sessionManager.save(sid, prunedMessages);
+      await sessionManager.save(sid, result.messages);
+
+      setImmediate(async () => {
+        try {
+          const compressed = await sessionManager.compress(result.messages);
+          await sessionManager.save(sid, compressed);
+        } catch (error) {
+          log.error(`Background compression failed: ${error}`);
+        }
+      });
 
       return {
         response: result.response,
@@ -128,14 +141,17 @@ async function startCLITransport(
   sessionId?: string,
   providerName?: string,
 ): Promise<void> {
-  // Setup dependencies
+  const userId = await getUserId();
   const llmClient = createLLMClientFromEnv(providerName);
   const sessionManager = createSessionManager({
     store: new JSONLStore({ dir: DEFAULT_SESSION_DIR }),
     maxContextMessages: 40,
   });
+  sessionManager.setLLMClient(llmClient);
 
   initMemoryWithLLM(llmClient);
+  const memory = getMemory();
+  memory.setUserId(userId);
 
   // Register tools
   registerTool(calculatorTool);
@@ -213,8 +229,7 @@ async function startCLITransport(
         step.result = result.response;
         lastResult = result.response;
 
-        const prunedMessages = sessionManager.prune(result.messages);
-        await sessionManager.save(sid, prunedMessages);
+        await sessionManager.save(sid, result.messages);
       }
 
       console.log('\n[Planner] Plan complete.');
@@ -233,14 +248,34 @@ async function startCLITransport(
       abortSignal: abortController?.signal,
     });
 
-    const prunedMessages = sessionManager.prune(result.messages);
-    await sessionManager.save(sid, prunedMessages);
+    await sessionManager.save(sid, result.messages);
+
+    setImmediate(async () => {
+      try {
+        const compressed = await sessionManager.compress(result.messages);
+        await sessionManager.save(sid, compressed);
+
+        if (result.messages.length >= 2) {
+          const extraction = await extractMemories(
+            result.messages,
+            llmClient,
+            memory,
+          );
+          if (extraction.extracted.length > 0) {
+            log.info(
+              `Background: Auto-extracted ${extraction.extracted.length} memories`,
+            );
+          }
+        }
+      } catch (error) {
+        log.error(`Background processing failed: ${error}`);
+      }
+    });
 
     return '';
   };
 
   // Start CLI
-  const memory = getMemory();
   await startCLI(handler, {
     sessionId: sid,
     welcomeMessage: `Agent CLI\nSession: ${sid}\nType "exit" to quit.`,

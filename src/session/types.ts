@@ -76,54 +76,16 @@ export interface SessionStore {
  * Options for creating a SessionManager.
  */
 export interface SessionManagerOptions {
-  /** Storage backend */
   store: SessionStore;
-
-  /** Maximum context messages before pruning (default: 40) */
   maxContextMessages?: number;
 }
 
-// ─── Manager Interface ──────────────────────────────────────────────────────
-
-/**
- * Interface for session manager.
- */
 export interface SessionManager {
-  /**
-   * Load or create a session.
-   *
-   * @param id - Session ID
-   * @returns Session messages
-   */
+  setLLMClient(client: import('../llm/types.js').LLMClient): void;
   load(id: string): Promise<Message[]>;
-
-  /**
-   * Save session messages.
-   *
-   * @param id - Session ID
-   * @param messages - Messages to save
-   */
   save(id: string, messages: Message[]): Promise<void>;
-
-  /**
-   * Prune messages if they exceed context limit.
-   *
-   * @param messages - Messages to prune
-   * @returns Pruned messages
-   */
   prune(messages: Message[]): Message[];
-
-  /**
-   * List all sessions.
-   *
-   * @returns Array of session metadata
-   */
+  compress(messages: Message[]): Promise<Message[]>;
   list(): Promise<SessionMeta[]>;
-
-  /**
-   * Delete a session.
-   *
-   * @param id - Session ID to delete
-   */
   delete(id: string): Promise<void>;
 }

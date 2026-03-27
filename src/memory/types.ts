@@ -2,6 +2,7 @@ export type Scope = 'user' | 'agent' | 'global';
 
 export interface MemoryRecord {
   id: string;
+  userId: string;
   key: string;
   value: string;
   text: string;
@@ -16,6 +17,7 @@ export interface MemoryRecord {
 
 export interface SearchResult {
   id: string;
+  userId: string;
   key: string;
   value: string;
   text: string;
@@ -30,9 +32,11 @@ export interface SearchOptions {
   scope?: Scope;
   rerank?: boolean;
   atTime?: number | Date;
+  userId?: string;
 }
 
 export interface MemoryService {
+  setUserId(userId: string): void;
   setFact(key: string, value: string): Promise<void>;
   getFact(key: string): Promise<string | null>;
   listFacts(): Promise<Array<{ key: string; value: string }>>;
