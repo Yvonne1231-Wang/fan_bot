@@ -15,7 +15,7 @@ import {
   shouldPlan,
 } from './agent/index.js';
 import { createSessionManager, JSONLStore } from './session/index.js';
-import { getMemory } from './memory/index.js';
+import { getMemory, LanceDBMemoryService } from './memory/index.js';
 import { registry, registerTool } from './tools/registry.js';
 import { calculatorTool } from './tools/calculator.js';
 import { readFileTool, writeFileTool, listDirTool } from './tools/files.js';
@@ -33,6 +33,13 @@ import {
 
 const DEFAULT_SESSION_DIR = './sessions';
 const DEFAULT_HTTP_PORT = 3000;
+
+function initMemoryWithLLM(llmClient: LLMClient): void {
+  const memory = getMemory();
+  if (memory instanceof LanceDBMemoryService) {
+    memory.setLLMClient(llmClient);
+  }
+}
 
 // ─── Main Function ──────────────────────────────────────────────────────────
 
@@ -67,6 +74,8 @@ async function startHTTPServer(): Promise<void> {
     store: new JSONLStore({ dir: DEFAULT_SESSION_DIR }),
     maxContextMessages: 40,
   });
+
+  initMemoryWithLLM(llmClient);
 
   registerTool(calculatorTool);
   registerTool(readFileTool);
@@ -125,6 +134,8 @@ async function startCLITransport(
     store: new JSONLStore({ dir: DEFAULT_SESSION_DIR }),
     maxContextMessages: 40,
   });
+
+  initMemoryWithLLM(llmClient);
 
   // Register tools
   registerTool(calculatorTool);

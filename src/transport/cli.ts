@@ -3,7 +3,7 @@
 import { createInterface } from 'readline';
 import type { CLITransportOptions } from './types.js';
 import type { SessionManager } from '../session/types.js';
-import type { MemoryService } from '../memory/types.js';
+import type { MemoryService, Scope } from '../memory/types.js';
 
 export type InputHandler = (input: string) => Promise<string | void>;
 
@@ -23,16 +23,26 @@ async function handleSlashCommand(
   switch (cmd) {
     case 'help':
       console.log(`
-Available commands:
-  /help           Show this help message
-  /sessions       List recent sessions
-  /new            Start a new session
-  /clear          Clear current session messages
-  /status         Show current session info
-  /remember <k=v> Store a fact in memory
-  /forget <key>   Delete a fact from memory
-  /memory         List all stored facts
-  /exit           Exit the program
+ Available commands:
+  /help              Show this help message
+  /sessions          List recent sessions
+  /new               Start a new session
+  /clear             Clear current session messages
+  /status            Show current session info
+  /remember <k=v>    Store a fact in memory
+                     Format: [scope:]key=value
+                     Scopes: user (default), agent, global
+                     Example: /remember agent:persona=helpful
+  /forget <key>      Delete a fact from memory
+                     Format: [scope:]key
+  /memory            Show memory stats
+  /memory list [scope]     List all memories (optionally by scope)
+  /memory search <query>   Semantic search memories
+  /memory delete <id>      Delete memory by ID
+  /memory stats            Show memory statistics
+  /memory history <key>   Show history of a key (all versions)
+                     Example: /memory history job
+  /exit              Exit the program
 `);
       return true;
 
@@ -86,17 +96,43 @@ Available commands:
         return true;
       }
       if (args.length === 0) {
-        console.log('Usage: /remember <key>=<value>');
+        console.log('Usage: /remember [scope:]key=value');
+        console.log('  Scopes: user (default), agent, global');
+        console.log('  Example: /remember agent:persona=helpful');
         return true;
       }
-      const [memKey, ...memValParts] = args.join(' ').split('=');
+      const rememberInput = args.join(' ');
+      let rememberScope: Scope = 'user';
+      let rememberKV = rememberInput;
+
+      if (rememberInput.includes(':') && !rememberInput.startsWith(':')) {
+        const [scopePart, ...rest] = rememberInput.split(':');
+        if (
+          scopePart === 'user' ||
+          scopePart === 'agent' ||
+          scopePart === 'global'
+        ) {
+          rememberScope = scopePart;
+          rememberKV = rest.join(':');
+        }
+      }
+
+      const [memKey, ...memValParts] = rememberKV.split('=');
       const memValue = memValParts.join('=');
       if (!memKey || !memValue) {
-        console.log('Usage: /remember <key>=<value>');
+        console.log('Usage: /remember [scope:]key=value');
         return true;
       }
-      await memory.setFact(memKey.trim(), memValue.trim());
-      console.log(`Saved: ${memKey.trim()} = ${memValue.trim()}`);
+
+      const record = await memory.remember(
+        memKey.trim(),
+        memValue.trim(),
+        rememberScope,
+      );
+      console.log(
+        `Saved [${rememberScope}]: ${memKey.trim()} = ${memValue.trim()}`,
+      );
+      console.log(`  ID: ${record.id}`);
       return true;
 
     case 'forget':
@@ -105,12 +141,29 @@ Available commands:
         return true;
       }
       if (args.length === 0) {
-        console.log('Usage: /forget <key>');
+        console.log('Usage: /forget [scope:]key');
         return true;
       }
-      const delKey = args.join(' ');
-      await memory.deleteFact(delKey.trim());
-      console.log(`Deleted: ${delKey.trim()}`);
+      const forgetInput = args.join(' ');
+      let forgetScope: Scope | undefined;
+      let forgetKey = forgetInput;
+
+      if (forgetInput.includes(':') && !forgetInput.startsWith(':')) {
+        const [scopePart, ...rest] = forgetInput.split(':');
+        if (
+          scopePart === 'user' ||
+          scopePart === 'agent' ||
+          scopePart === 'global'
+        ) {
+          forgetScope = scopePart;
+          forgetKey = rest.join(':');
+        }
+      }
+
+      await memory.forget(forgetKey.trim(), forgetScope);
+      console.log(
+        `Deleted: ${forgetKey.trim()}${forgetScope ? ` (scope: ${forgetScope})` : ''}`,
+      );
       return true;
 
     case 'memory':
@@ -118,17 +171,116 @@ Available commands:
         console.log('Memory service not available');
         return true;
       }
-      const facts = await memory.listFacts();
-      if (facts.length === 0) {
+
+      const subCmd = args[0]?.toLowerCase();
+      const subArgs = args.slice(1);
+
+      if (!subCmd || subCmd === 'stats') {
+        const stats = await memory.stats();
+        console.log('Memory Statistics:');
+        console.log(`  user:   ${stats.user} memories`);
+        console.log(`  agent:  ${stats.agent} memories`);
+        console.log(`  global: ${stats.global} memories`);
         console.log(
-          'No facts stored. Use /remember <key>=<value> to store facts.',
+          `  Total:  ${stats.user + stats.agent + stats.global} memories`,
         );
-      } else {
-        console.log('Stored facts:');
-        for (const f of facts) {
-          console.log(`  ${f.key}: ${f.value}`);
-        }
+        return true;
       }
+
+      if (subCmd === 'list') {
+        const listScopeArg = subArgs[0];
+        let listScope: Scope | undefined;
+        if (
+          listScopeArg === 'user' ||
+          listScopeArg === 'agent' ||
+          listScopeArg === 'global'
+        ) {
+          listScope = listScopeArg;
+        }
+
+        const records = await memory.listAll(listScope);
+        if (records.length === 0) {
+          console.log(
+            `No memories stored${listScope ? ` in scope '${listScope}'` : ''}.`,
+          );
+        } else {
+          console.log(`Stored memories${listScope ? ` (${listScope})` : ''}:`);
+          for (const r of records) {
+            const date = new Date(r.updatedAt).toLocaleDateString();
+            console.log(`  [${r.scope}] ${r.key}: ${r.value}`);
+            console.log(`      ID: ${r.id} | Updated: ${date}`);
+          }
+        }
+        return true;
+      }
+
+      if (subCmd === 'search') {
+        if (subArgs.length === 0) {
+          console.log('Usage: /memory search <query>');
+          return true;
+        }
+        const searchQuery = subArgs.join(' ');
+        console.log(`Searching for: "${searchQuery}"...`);
+        const results = await memory.searchAdvanced(searchQuery, {
+          topK: 10,
+          rerank: true,
+        });
+        if (results.length === 0) {
+          console.log('No results found.');
+        } else {
+          console.log(`Found ${results.length} results:`);
+          for (const r of results) {
+            console.log(`  [${r.scope}] ${r.key}: ${r.value}`);
+            console.log(`      Score: ${r.score.toFixed(3)} | ID: ${r.id}`);
+          }
+        }
+        return true;
+      }
+
+      if (subCmd === 'delete') {
+        if (subArgs.length === 0) {
+          console.log('Usage: /memory delete <id>');
+          return true;
+        }
+        const deleteId = subArgs[0];
+        const existing = await memory.getById(deleteId);
+        if (!existing) {
+          console.log(`Memory not found: ${deleteId}`);
+          return true;
+        }
+        await memory.deleteById(deleteId);
+        console.log(
+          `Deleted: [${existing.scope}] ${existing.key}: ${existing.value}`,
+        );
+        return true;
+      }
+
+      if (subCmd === 'history') {
+        if (subArgs.length === 0) {
+          console.log('Usage: /memory history <key>');
+          console.log('  Show all versions of a key');
+          return true;
+        }
+        const historyKey = subArgs[0];
+        const records = await memory.getHistory(historyKey);
+        if (records.length === 0) {
+          console.log(`No history found for key: ${historyKey}`);
+          return true;
+        }
+        console.log(`History for "${historyKey}":`);
+        for (const r of records) {
+          const date = new Date(r.updatedAt).toLocaleDateString();
+          console.log(`  [${r.scope}] ${r.key}: ${r.value}`);
+          console.log(
+            `      Valid: ${new Date(r.validFrom).toLocaleDateString()} - ${r.validUntil ? new Date(r.validUntil).toLocaleDateString() : 'present'}`,
+          );
+          console.log(`      ID: ${r.id} | Updated: ${date}`);
+        }
+        return true;
+      }
+
+      console.log(`Unknown /memory subcommand: ${subCmd}`);
+      console.log('Available: list, search, delete, history, stats');
       return true;
 
     default:

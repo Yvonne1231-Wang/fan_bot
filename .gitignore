@@ -1,7 +1,38 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+*.js
+*.d.ts
+!src/**/*.d.ts
+
+# Environment
 .env
+.env.local
+.env.*.local
+
+# Logs
 *.log
+npm-debug.log*
+
+# OS
 .DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
 sessions/
+.memory/
 docs/
+
+# Test
+coverage/
+
+# Package
+*.tgz
