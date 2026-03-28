@@ -18,6 +18,11 @@ interface Soul {
   vibe: string[];
 }
 
+let _cachedIdentity: Identity | null = null;
+let _cachedIdentityLoaded = false;
+let _cachedSoul: Soul | null | undefined = undefined;
+let _cachedSoulLoaded = false;
+
 async function ensureFile(filename: string): Promise<string> {
   const filePath = join(process.cwd(), filename);
   const examplePath = join(process.cwd(), `${filename}.example`);
@@ -30,6 +35,10 @@ async function ensureFile(filename: string): Promise<string> {
 }
 
 async function loadIdentity(): Promise<Identity> {
+  if (_cachedIdentityLoaded) {
+    return _cachedIdentity ?? { name: 'Assistant', emoji: '🤖' };
+  }
+
   try {
     await ensureFile('IDENTITY.md');
     const content = await readFile(join(process.cwd(), 'IDENTITY.md'), 'utf-8');
@@ -62,13 +71,21 @@ async function loadIdentity(): Promise<Identity> {
       }
     }
 
+    _cachedIdentity = identity;
+    _cachedIdentityLoaded = true;
     return identity;
   } catch {
-    return { name: 'Assistant', emoji: '🤖' };
+    _cachedIdentity = { name: 'Assistant', emoji: '🤖' };
+    _cachedIdentityLoaded = true;
+    return _cachedIdentity;
   }
 }
 
 async function loadSoul(): Promise<Soul | null> {
+  if (_cachedSoulLoaded) {
+    return _cachedSoul ?? null;
+  }
+
   try {
     await ensureFile('SOUL.md');
     const content = await readFile(join(process.cwd(), 'SOUL.md'), 'utf-8');
@@ -102,8 +119,12 @@ async function loadSoul(): Promise<Soul | null> {
       }
     }
 
-    return soul.coreTruths.length > 0 ? soul : null;
+    _cachedSoul = soul.coreTruths.length > 0 ? soul : null;
+    _cachedSoulLoaded = true;
+    return _cachedSoul;
   } catch {
+    _cachedSoul = null;
+    _cachedSoulLoaded = true;
     return null;
   }
 }

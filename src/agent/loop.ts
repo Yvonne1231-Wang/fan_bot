@@ -2,6 +2,7 @@
 
 import type {
   LLMClient,
+  LLMResponse,
   Message,
   ContentBlock,
   ToolUseBlock,
@@ -203,19 +204,30 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
 
       const toolSchemas = toolRegistry.getSchemas();
 
-      let response;
+      let response: LLMResponse;
       if (llmClient.stream) {
-        response = await llmClient.stream(
-          messages,
-          toolSchemas,
-          systemPrompt,
-          (delta) => {
-            callbacks?.onContentDelta?.(delta);
-            options.onText?.(delta);
+        const streamCall = async (): Promise<LLMResponse> => {
+          return llmClient.stream!(
+            messages,
+            toolSchemas,
+            systemPrompt,
+            (delta) => {
+              callbacks?.onContentDelta?.(delta);
+              options.onText?.(delta);
+            },
+            callbacks?.onThinking,
+            options.abortSignal,
+          );
+        };
+
+        response = await withRetry(streamCall, {
+          maxRetries: 3,
+          onRetry: (attempt, delayMs, error) => {
+            log.warn(
+              `Stream call failed (attempt ${attempt}/3), retrying in ${delayMs}ms: ${error.message}`,
+            );
           },
-          callbacks?.onThinking,
-          options.abortSignal,
-        );
+        });
       } else {
         const callLLM = async () => {
           const result = await llmClient.chat(

@@ -31,6 +31,20 @@ const EMBEDDING_DIMENSION = 768;
 const TABLE_NAME = 'memories';
 const RRF_K = 60;
 
+const BM25_K1 = 1.5;
+const BM25_B = 0.75;
+const BM25_AVGDL_SAMPLE_SIZE = 1000;
+
+const RECENCY_HALF_LIFE_DAYS = 14;
+const RECENCY_WEIGHT = 0.1;
+
+const LENGTH_NORM_ANCHOR = 500;
+
+const RERANK_API_URL = 'https://api.jina.ai/v1';
+const RERANK_MODEL = 'jina-reranker-v3';
+const CROSS_ENCODER_WEIGHT = 0.6;
+const ORIGINAL_SCORE_WEIGHT = 0.4;
+
 const JINA_API_URL = 'https://api.jina.ai/v1';
 const JINA_EMBEDDING_MODEL = 'jina-embeddings-v2-base-en';
 
@@ -197,6 +211,167 @@ export class LanceDBMemoryService implements MemoryService {
     return record.userId === targetUser;
   }
 
+  private tokenize(text: string): string[] {
+    return text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 1);
+  }
+
+  private isNoiseContent(text: string): boolean {
+    const lower = text.toLowerCase().trim();
+
+    const refusalPatterns = [
+      /^sorry,?\s/i,
+      /^i can't\s/i,
+      /^i cannot\s/i,
+      /^unable to\s/i,
+      /^i'm sorry,?\s/i,
+      /^i don'?t have\s/i,
+      /^i don'?t know\s/i,
+      /^that (would be|goes beyond|s request)/i,
+      /^as an ai,?\s/i,
+      /^i'?m an?\s/i,
+      /^i was?n'?t designed\s/i,
+    ];
+
+    if (refusalPatterns.some((p) => p.test(lower))) {
+      return true;
+    }
+
+    const greetingPatterns = [
+      /^(hi|hello|hey|greetings|howdy|hiya),?\s*/i,
+      /^(good (morning|afternoon|evening|day)),?\s*/i,
+      /^hey there!?\s*$/i,
+    ];
+
+    if (greetingPatterns.some((p) => p.test(lower)) && lower.length < 50) {
+      return true;
+    }
+
+    const metaPatterns = [
+      /^what do you mean/i,
+      /^what do you think/i,
+      /^can you clarify/i,
+      /^could you explain/i,
+      /^i need help/i,
+      /^help me/i,
+      /^tell me about yourself/i,
+      /^who are you/i,
+    ];
+
+    if (metaPatterns.some((p) => p.test(lower)) && lower.length < 100) {
+      return true;
+    }
+
+    const confirmationPatterns = [
+      /^(yes|yep|yeah|correct|right|ok|okay|sounds good|agreed),?\s*$/i,
+      /^(no|nope|nah|incorrect|wrong),?\s*$/i,
+      /^(thank you|thanks),?\s*$/i,
+    ];
+
+    if (confirmationPatterns.some((p) => p.test(lower)) && lower.length < 30) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private async computeBM25Scores(
+    queryWords: string[],
+    records: InternalRecord[],
+    avgDocLen: number,
+  ): Promise<Map<string, number>> {
+    const N = records.length;
+    const docFreqs = new Map<string, number>();
+
+    for (const word of queryWords) {
+      docFreqs.set(word, 0);
+    }
+
+    for (const record of records) {
+      const docWords = new Set(this.tokenize(record.text));
+      for (const word of queryWords) {
+        if (docWords.has(word)) {
+          docFreqs.set(word, (docFreqs.get(word) || 0) + 1);
+        }
+      }
+    }
+
+    const scores = new Map<string, number>();
+
+    for (const record of records) {
+      const docWords = this.tokenize(record.text);
+      const docLen = docWords.length;
+      const wordCounts = new Map<string, number>();
+      for (const word of docWords) {
+        wordCounts.set(word, (wordCounts.get(word) || 0) + 1);
+      }
+
+      let score = 0;
+      for (const word of queryWords) {
+        const df = docFreqs.get(word) || 0;
+        if (df === 0) continue;
+
+        const idf = Math.log((N - df + 0.5) / (df + 0.5) + 1);
+        const tf = wordCounts.get(word) || 0;
+        const numerator = tf * (BM25_K1 + 1);
+        const denominator =
+          tf + BM25_K1 * (1 - BM25_B + BM25_B * (docLen / avgDocLen));
+        score += idf * (numerator / denominator);
+      }
+
+      scores.set(record.id, score);
+    }
+
+    return scores;
+  }
+
+  private async estimateAverageDocLength(
+    records: InternalRecord[],
+    sampleSize: number,
+  ): Promise<number> {
+    const sample = records.slice(0, sampleSize);
+    const totalLen = sample.reduce(
+      (sum, r) => sum + this.tokenize(r.text).length,
+      0,
+    );
+    return totalLen / Math.max(sample.length, 1);
+  }
+
+  private computeRecencyBoost(record: InternalRecord, now: number): number {
+    const ageMs = now - record.createdAt;
+    const halfLifeMs = RECENCY_HALF_LIFE_DAYS * 24 * 60 * 60 * 1000;
+    const ageInHalfLives = ageMs / halfLifeMs;
+    const decayFactor = Math.pow(0.5, ageInHalfLives);
+    return 1 + RECENCY_WEIGHT * decayFactor;
+  }
+
+  private applyRecencyBoost(
+    results: Array<{ record: InternalRecord; score: number }>,
+    now: number,
+  ): Array<{ record: InternalRecord; score: number }> {
+    return results.map((item) => ({
+      ...item,
+      score: item.score * this.computeRecencyBoost(item.record, now),
+    }));
+  }
+
+  private applyLengthNorm(
+    results: Array<{ record: InternalRecord; score: number }>,
+  ): Array<{ record: InternalRecord; score: number }> {
+    return results.map((item) => {
+      const textLen = item.record.text.length;
+      const normFactor = LENGTH_NORM_ANCHOR / Math.max(textLen, 1);
+      const balancedFactor = Math.sqrt(normFactor);
+      return {
+        ...item,
+        score: item.score * balancedFactor,
+      };
+    });
+  }
+
   private rrfMerge(
     vectorResults: InternalRecord[],
     bm25Results: InternalRecord[],
@@ -239,13 +414,93 @@ export class LanceDBMemoryService implements MemoryService {
     candidates: InternalRecord[],
     topK: number,
   ): Promise<Array<{ record: InternalRecord; score: number }>> {
-    if (!this.llmClient || candidates.length === 0) {
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    if (!this.llmClient && !this.jinaApiKey) {
       return candidates
         .slice(0, topK)
         .map((r, i) => ({ record: r, score: 1 - i * 0.1 }));
     }
 
-    log.debug(`Reranking ${candidates.length} candidates with LLM`);
+    let rerankScores: Map<number, number>;
+
+    if (this.jinaApiKey) {
+      rerankScores = await this.rerankWithJina(query, candidates);
+    } else {
+      rerankScores = await this.rerankWithLLMPrompt(query, candidates);
+    }
+
+    const results = candidates.map((r, i) => ({
+      record: r,
+      score: rerankScores.get(i) ?? 0.5,
+    }));
+
+    return results.sort((a, b) => b.score - a.score).slice(0, topK);
+  }
+
+  private async rerankWithJina(
+    query: string,
+    candidates: InternalRecord[],
+  ): Promise<Map<number, number>> {
+    if (!this.jinaApiKey) {
+      return this.rerankWithLLMPrompt(query, candidates);
+    }
+
+    log.debug(
+      `Reranking ${candidates.length} candidates with Jina cross-encoder`,
+    );
+
+    try {
+      const response = await fetch(`${RERANK_API_URL}/rerank`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.jinaApiKey}`,
+        },
+        body: JSON.stringify({
+          model: RERANK_MODEL,
+          query,
+          documents: candidates.map((c) => c.text),
+          top_n: candidates.length,
+        }),
+      });
+
+      if (!response.ok) {
+        log.warn(`Jina rerank API failed: ${response.status}`);
+        return this.rerankWithLLMPrompt(query, candidates);
+      }
+
+      const data = (await response.json()) as {
+        results: Array<{ index: number; relevance_score: number }>;
+      };
+
+      const scores = new Map<number, number>();
+      for (const result of data.results) {
+        scores.set(result.index, result.relevance_score);
+      }
+
+      return scores;
+    } catch (error) {
+      log.warn(
+        `Jina rerank failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return this.rerankWithLLMPrompt(query, candidates);
+    }
+  }
+
+  private async rerankWithLLMPrompt(
+    query: string,
+    candidates: InternalRecord[],
+  ): Promise<Map<number, number>> {
+    if (!this.llmClient) {
+      const scores = new Map<number, number>();
+      candidates.forEach((_, i) => scores.set(i, 1 - i * 0.1));
+      return scores;
+    }
+
+    log.debug(`Reranking ${candidates.length} candidates with LLM prompt`);
 
     const candidateTexts = candidates
       .map((c, i) => `[${i}] ${c.text}`)
@@ -277,6 +532,7 @@ Only output the scores, nothing else.`;
       const scorePattern = /(\d+)\s*[:\s]\s*([\d.]+)/g;
       const scores = new Map<number, number>();
       let match;
+
       while ((match = scorePattern.exec(text)) !== null) {
         const idx = parseInt(match[1], 10);
         const score = parseFloat(match[2]);
@@ -290,19 +546,18 @@ Only output the scores, nothing else.`;
         }
       }
 
-      const results = candidates.map((r, i) => ({
-        record: r,
-        score: scores.get(i) ?? 0.5,
-      }));
+      if (scores.size === 0) {
+        candidates.forEach((_, i) => scores.set(i, 0.5));
+      }
 
-      return results.sort((a, b) => b.score - a.score).slice(0, topK);
+      return scores;
     } catch (error) {
       log.warn(
-        `Rerank failed: ${error instanceof Error ? error.message : String(error)}`,
+        `LLM rerank failed: ${error instanceof Error ? error.message : String(error)}`,
       );
-      return candidates
-        .slice(0, topK)
-        .map((r, i) => ({ record: r, score: 1 - i * 0.1 }));
+      const scores = new Map<number, number>();
+      candidates.forEach((_, i) => scores.set(i, 1 - i * 0.1));
+      return scores;
     }
   }
 
@@ -441,7 +696,9 @@ Only output the scores, nothing else.`;
         r.id !== '__seed__' &&
         this.isValidAtTime(r, atTime) &&
         this.matchesUser(r, targetUserId) &&
-        (!scope || r.scope === scope),
+        (!scope || r.scope === scope) &&
+        ((r as Record<string, unknown>)._distance as number) <=
+          1 - SIMILARITY_THRESHOLD,
     );
 
     const bm25Results: InternalRecord[] = [];
@@ -466,17 +723,20 @@ Only output the scores, nothing else.`;
           .toArray()) as InternalRecord[];
 
         if (allRecords.length > 0) {
+          const avgDocLen = await this.estimateAverageDocLength(
+            allRecords,
+            BM25_AVGDL_SAMPLE_SIZE,
+          );
+          const bm25Scores = await this.computeBM25Scores(
+            queryWords,
+            allRecords,
+            avgDocLen,
+          );
+
           const scored = allRecords
-            .map((r) => {
-              const textLower = r.text.toLowerCase();
-              let matches = 0;
-              for (const word of queryWords) {
-                if (textLower.includes(word)) matches++;
-              }
-              return { record: r, matches };
-            })
-            .filter((item) => item.matches > 0)
-            .sort((a, b) => b.matches - a.matches)
+            .map((r) => ({ record: r, score: bm25Scores.get(r.id) || 0 }))
+            .filter((item) => item.score > 0)
+            .sort((a, b) => b.score - a.score)
             .slice(0, topK * 2);
 
           bm25Results.push(...scored.map((s) => s.record));
@@ -494,15 +754,18 @@ Only output the scores, nothing else.`;
       useRerank ? topK * 2 : topK,
     );
 
+    const boostedResults = this.applyRecencyBoost(merged, Date.now());
+    const normalizedResults = this.applyLengthNorm(boostedResults);
+
     let finalResults: Array<{ record: InternalRecord; score: number }>;
     if (useRerank && this.llmClient) {
       finalResults = await this.rerankWithLLM(
         query,
-        merged.map((m) => m.record),
+        normalizedResults.map((m) => m.record),
         topK,
       );
     } else {
-      finalResults = merged.slice(0, topK);
+      finalResults = normalizedResults.slice(0, topK);
     }
 
     return finalResults.map((r) => ({
@@ -679,9 +942,6 @@ Only output the scores, nothing else.`;
   }
 
   async buildContext(query: string): Promise<string | null> {
-    const facts = await this.listFacts();
-    if (facts.length === 0) return null;
-
     const results = await this.searchAdvanced(query, { topK: 5 });
     if (results.length === 0) return null;
 

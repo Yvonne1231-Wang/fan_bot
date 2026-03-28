@@ -45,6 +45,15 @@ import {
   getGlobalLoader,
 } from './skills/index.js';
 import type { SkillEntry } from './skills/types.js';
+import { CronStore, CronScheduler, CronExecutor } from './cron/index.js';
+import {
+  cronCreateTool,
+  cronListTool,
+  cronDeleteTool,
+  cronToggleTool,
+  cronRunNowTool,
+  setCronDeps,
+} from './tools/cron.js';
 
 const log = createDebug('main');
 
@@ -74,6 +83,21 @@ async function loadSkills(): Promise<void> {
 
 const DEFAULT_SESSION_DIR = './sessions';
 const DEFAULT_HTTP_PORT = 3000;
+const DEFAULT_MAX_AGENT_ITERATIONS = 10;
+
+/**
+ * 注册所有默认工具
+ */
+function registerDefaultTools(): void {
+  registerTool(calculatorTool);
+  registerTool(readFileTool);
+  registerTool(writeFileTool);
+  registerTool(listDirTool);
+  registerTool(shellTool);
+  registerTool(webSearchTool);
+  registerTool(webFetchTool);
+  registerTool(skillTool);
+}
 
 /**
  * 初始化记忆服务的 LLM 客户端
@@ -83,6 +107,35 @@ function initMemoryWithLLM(llmClient: LLMClient): void {
   if (memory instanceof LanceDBMemoryService) {
     memory.setLLMClient(llmClient);
   }
+}
+
+/**
+ * 初始化并启动 Cron 调度器
+ */
+function initCronScheduler(options: {
+  llmClient: LLMClient;
+  messageHandler: MessageHandler;
+}): CronScheduler {
+  const { llmClient, messageHandler } = options;
+
+  const store = new CronStore();
+  const executor = new CronExecutor({
+    llmClient,
+    toolRegistry: registry,
+    memory: getMemory(),
+    notificationHandler: messageHandler,
+  });
+  const scheduler = new CronScheduler(store, executor);
+
+  setCronDeps(store, scheduler);
+
+  registerTool(cronCreateTool);
+  registerTool(cronListTool);
+  registerTool(cronDeleteTool);
+  registerTool(cronToggleTool);
+  registerTool(cronRunNowTool);
+
+  return scheduler;
 }
 
 /**
@@ -138,7 +191,9 @@ function createMessageHandler(options: {
           llmClient,
           toolRegistry: registry,
           initialMessages: messages,
-          maxIterations: 100,
+          maxIterations:
+            Number(process.env.MAX_AGENT_ITERATIONS) ||
+            DEFAULT_MAX_AGENT_ITERATIONS,
           systemPrompt,
           confirmFn,
           callbacks,
@@ -150,13 +205,34 @@ function createMessageHandler(options: {
       }
 
       responseText = `Plan complete.\n\nFinal result:\n${lastResult}`;
+
+      setImmediate(async () => {
+        try {
+          if (memory) {
+            const extraction = await extractMemories(
+              messages.slice(-8),
+              llmClient,
+              memory,
+            );
+            if (extraction.extracted.length > 0) {
+              log.info(
+                `Background: Auto-extracted ${extraction.extracted.length} memories from plan`,
+              );
+            }
+          }
+        } catch (error) {
+          log.error(`Background processing failed: ${error}`);
+        }
+      });
     } else {
       const result = await runAgent({
         prompt: userQuery,
         llmClient,
         toolRegistry: registry,
         initialMessages: messages,
-        maxIterations: 100,
+        maxIterations:
+          Number(process.env.MAX_AGENT_ITERATIONS) ||
+          DEFAULT_MAX_AGENT_ITERATIONS,
         systemPrompt,
         onText,
         confirmFn,
@@ -172,8 +248,9 @@ function createMessageHandler(options: {
           await sessionManager.save(sessionId, compressed);
 
           if (result.messages.length >= 2) {
+            const lastMessages = result.messages.slice(-8);
             const extraction = await extractMemories(
-              result.messages.slice(-2),
+              lastMessages,
               llmClient,
               memory,
             );
@@ -241,15 +318,9 @@ async function startHTTPServer(): Promise<void> {
   });
 
   initMemoryWithLLM(llmClient);
+  sessionManager.setLLMClient(llmClient);
 
-  registerTool(calculatorTool);
-  registerTool(readFileTool);
-  registerTool(writeFileTool);
-  registerTool(listDirTool);
-  registerTool(shellTool);
-  registerTool(webSearchTool);
-  registerTool(webFetchTool);
-  registerTool(skillTool);
+  registerDefaultTools();
 
   const permissionService = createPermissionServiceFromEnv();
 
@@ -277,8 +348,18 @@ async function startHTTPServer(): Promise<void> {
     return { sessions };
   });
 
+  const cronScheduler = initCronScheduler({ llmClient, messageHandler });
+  await cronScheduler.start();
+
   await adapter.initialize();
   log.info(`HTTP server started on port ${port}`);
+
+  process.on('SIGINT', async () => {
+    log.info('Shutting down...');
+    await cronScheduler.stop();
+    await adapter.close();
+    process.exit(0);
+  });
 }
 
 /**
@@ -304,15 +385,9 @@ async function startFeishuAdapter(): Promise<void> {
   initMemoryWithLLM(llmClient);
   const memory = getMemory();
   memory.setUserId(userId);
+  sessionManager.setLLMClient(llmClient);
 
-  registerTool(calculatorTool);
-  registerTool(readFileTool);
-  registerTool(writeFileTool);
-  registerTool(listDirTool);
-  registerTool(shellTool);
-  registerTool(webSearchTool);
-  registerTool(webFetchTool);
-  registerTool(skillTool);
+  registerDefaultTools();
 
   const permissionService = createPermissionServiceFromEnv();
 
@@ -347,6 +422,9 @@ async function startFeishuAdapter(): Promise<void> {
     return messageHandler(message, callbacks);
   });
 
+  const cronScheduler = initCronScheduler({ llmClient, messageHandler });
+  await cronScheduler.start();
+
   async function stopSkillsWatcher(): Promise<void> {
     try {
       const loader = getGlobalLoader();
@@ -359,6 +437,7 @@ async function startFeishuAdapter(): Promise<void> {
   async function shutdown(adapter?: { close(): Promise<void> }): Promise<void> {
     log.info('Shutting down...');
     await stopSkillsWatcher();
+    await cronScheduler.stop();
     if (adapter) {
       await adapter.close();
     }
@@ -390,14 +469,7 @@ async function startCLIAdapter(
   const memory = getMemory();
   memory.setUserId(userId);
 
-  registerTool(calculatorTool);
-  registerTool(readFileTool);
-  registerTool(writeFileTool);
-  registerTool(listDirTool);
-  registerTool(shellTool);
-  registerTool(webSearchTool);
-  registerTool(webFetchTool);
-  registerTool(skillTool);
+  registerDefaultTools();
 
   const sid = sessionId || `session-${Date.now()}`;
   const initialMessages = await sessionManager.load(sid);

@@ -60,6 +60,11 @@ Task: ${goal}`)],
 
 export function shouldPlan(message: string): boolean {
   if (message.startsWith('/plan ')) return true;
-  const multiStepWords = ['先', '然后', '最后', '再', 'then', 'after', 'finally', 'step'];
-  return multiStepWords.some(w => message.toLowerCase().includes(w));
+  const planPatterns = [
+    /先.{0,10}[，,].{0,20}(然后|接着|再)/,
+    /分(步|阶段|批)/,
+    /step\s*\d/i,
+    /^\s*(帮我|请你|麻烦).{0,30}(然后|再|接着|最后)/,
+  ];
+  return planPatterns.some((p) => p.test(message));
 }
