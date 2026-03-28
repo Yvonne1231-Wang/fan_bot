@@ -172,7 +172,9 @@ export class DefaultPermissionService implements PermissionService {
     }
   }
 
-  async checkPermission(message: UnifiedMessage): Promise<PermissionCheckResult> {
+  async checkPermission(
+    message: UnifiedMessage,
+  ): Promise<PermissionCheckResult> {
     const { context } = message;
 
     if (this.isAdmin(context.userId)) {
@@ -199,9 +201,7 @@ export class DefaultPermissionService implements PermissionService {
       return { allowed: true };
     }
 
-    const config = context.groupId
-      ? this.config.group
-      : this.config.dm;
+    const config = context.groupId ? this.config.group : this.config.dm;
 
     if (config.forbiddenTools.includes(toolName)) {
       return {
@@ -245,9 +245,7 @@ export class DefaultPermissionService implements PermissionService {
     return { ...this.config };
   }
 
-  private checkGroupPermission(
-    context: MessageContext,
-  ): PermissionCheckResult {
+  private checkGroupPermission(context: MessageContext): PermissionCheckResult {
     const { groupId, userId, metadata } = context;
     const config = this.config.group;
 
@@ -274,7 +272,10 @@ export class DefaultPermissionService implements PermissionService {
       };
     }
 
-    if (config.defaultPolicy === 'whitelist' && !config.whitelist.includes(groupId)) {
+    if (
+      config.defaultPolicy === 'whitelist' &&
+      !config.whitelist.includes(groupId)
+    ) {
       return {
         allowed: false,
         reason: 'This group is not in whitelist',
@@ -322,7 +323,10 @@ export class DefaultPermissionService implements PermissionService {
       };
     }
 
-    if (config.defaultPolicy === 'whitelist' && !config.whitelist.includes(userId)) {
+    if (
+      config.defaultPolicy === 'whitelist' &&
+      !config.whitelist.includes(userId)
+    ) {
       return {
         allowed: false,
         reason: 'This user is not in whitelist',
@@ -335,7 +339,7 @@ export class DefaultPermissionService implements PermissionService {
 }
 
 /**
- * 创建权限服务的工厂函数
+ * 创建权限服务
  *
  * @param config - 权限配置（可选）
  * @returns 权限服务实例
@@ -344,4 +348,43 @@ export function createPermissionService(
   config?: Partial<PermissionConfig>,
 ): PermissionService {
   return new DefaultPermissionService(config);
+}
+
+/**
+ * 从环境变量创建权限服务
+ *
+ * @returns 权限服务实例
+ */
+export function createPermissionServiceFromEnv(): PermissionService {
+  return new DefaultPermissionService({
+    admins: process.env.ADMINS?.split(',').filter(Boolean) || [],
+    group: {
+      defaultPolicy: 'whitelist',
+      whitelist:
+        process.env.FEISHU_GROUP_WHITELIST?.split(',').filter(Boolean) || [],
+      blacklist: [],
+      allowedTools: [],
+      forbiddenTools: [],
+      allowMention: true,
+      allowDirectCall: process.env.FEISHU_ALLOW_DIRECT_CALL === 'true',
+    },
+  });
+}
+
+/**
+ * 从环境变量创建权限配置
+ *
+ * @returns 权限配置
+ */
+export function getPermissionConfigFromEnv(): PermissionConfig {
+  return {
+    dm: { ...DEFAULT_PERMISSION_CONFIG.dm },
+    group: {
+      ...DEFAULT_PERMISSION_CONFIG.group,
+      whitelist:
+        process.env.FEISHU_GROUP_WHITELIST?.split(',').filter(Boolean) || [],
+      allowDirectCall: process.env.FEISHU_ALLOW_DIRECT_CALL === 'true',
+    },
+    admins: process.env.ADMINS?.split(',').filter(Boolean) || [],
+  };
 }

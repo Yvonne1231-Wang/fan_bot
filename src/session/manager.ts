@@ -84,7 +84,7 @@ export class SessionManagerImpl implements SessionManager {
     }
 
     const dropped = messages.length - this.maxContextMessages;
-    console.log(`[session] Context pruned: dropped ${dropped} oldest messages`);
+    log.debug(`Context pruned: dropped ${dropped} oldest messages`);
 
     const firstMessage = messages[0];
     const toPrune = messages.slice(1);

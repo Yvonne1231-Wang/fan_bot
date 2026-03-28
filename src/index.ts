@@ -33,7 +33,7 @@ import {
   type UnifiedResponse,
   type MessageHandler,
 } from './transport/index.js';
-import { createPermissionService } from './permission/index.js';
+import { createPermissionServiceFromEnv } from './permission/index.js';
 import {
   FeishuChannelAdapter,
   type FeishuAdapterConfig,
@@ -251,9 +251,7 @@ async function startHTTPServer(): Promise<void> {
   registerTool(webFetchTool);
   registerTool(skillTool);
 
-  const permissionService = createPermissionService({
-    admins: process.env.ADMINS?.split(',') || [],
-  });
+  const permissionService = createPermissionServiceFromEnv();
 
   const adapter = new HTTPChannelAdapter({ port });
   const messageHandler = createMessageHandler({ llmClient, sessionManager });
@@ -316,18 +314,7 @@ async function startFeishuAdapter(): Promise<void> {
   registerTool(webFetchTool);
   registerTool(skillTool);
 
-  const permissionService = createPermissionService({
-    admins: process.env.ADMINS?.split(',') || [],
-    group: {
-      defaultPolicy: 'whitelist',
-      whitelist: process.env.FEISHU_GROUP_WHITELIST?.split(',') || [],
-      blacklist: [],
-      allowedTools: [],
-      forbiddenTools: [],
-      allowMention: true,
-      allowDirectCall: process.env.FEISHU_ALLOW_DIRECT_CALL === 'true',
-    },
-  });
+  const permissionService = createPermissionServiceFromEnv();
 
   const feishuConfig: FeishuAdapterConfig = {
     appId,
@@ -432,9 +419,7 @@ async function startCLIAdapter(
     });
   };
 
-  const permissionService = createPermissionService({
-    admins: process.env.ADMINS?.split(',') || [],
-  });
+  const permissionService = createPermissionServiceFromEnv();
 
   const adapter = new CLIChannelAdapter({
     sessionId: sid,
