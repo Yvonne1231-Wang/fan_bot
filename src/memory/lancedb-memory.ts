@@ -24,6 +24,8 @@ type InternalRecord = Record<string, unknown> & {
   validFrom: number;
   validUntil: number;
   supersededBy: string;
+  accessCount: number;
+  lastAccessedAt: number;
 };
 
 const SIMILARITY_THRESHOLD = 0.85;
@@ -37,6 +39,10 @@ const BM25_AVGDL_SAMPLE_SIZE = 1000;
 
 const RECENCY_HALF_LIFE_DAYS = 14;
 const RECENCY_WEIGHT = 0.1;
+
+const ACCESS_DECAY_HALF_LIFE_DAYS = 30;
+const REINFORCEMENT_FACTOR = 0.5;
+const MAX_HALF_LIFE_MULTIPLIER = 3;
 
 const LENGTH_NORM_ANCHOR = 500;
 
@@ -56,6 +62,11 @@ export class LanceDBMemoryService implements MemoryService {
   private dbPath: string;
   private initPromise: Promise<void> | null = null;
   private currentUserId: string = 'default';
+
+  private accessTracker: Map<string, { count: number; lastAccess: number }> =
+    new Map();
+  private accessFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly ACCESS_FLUSH_INTERVAL_MS = 5000;
 
   constructor(dbPath: string = '.memory/lancedb', llmClient?: LLMClient) {
     this.dbPath = dbPath;
@@ -112,6 +123,8 @@ export class LanceDBMemoryService implements MemoryService {
           validFrom: now,
           validUntil: 0,
           supersededBy: '',
+          accessCount: 0,
+          lastAccessedAt: now,
         },
       ];
       this.table = await this.db.createTable(TABLE_NAME, seedData, {
@@ -341,11 +354,77 @@ export class LanceDBMemoryService implements MemoryService {
   }
 
   private computeRecencyBoost(record: InternalRecord, now: number): number {
+    const daysSinceLastAccess =
+      (now - (record.lastAccessedAt || record.createdAt)) /
+      (24 * 60 * 60 * 1000);
+
+    const accessFreshness = Math.exp(
+      (-daysSinceLastAccess * Math.log(2)) / ACCESS_DECAY_HALF_LIFE_DAYS,
+    );
+    const effectiveAccessCount = (record.accessCount || 0) * accessFreshness;
+
+    const extension =
+      RECENCY_HALF_LIFE_DAYS *
+      REINFORCEMENT_FACTOR *
+      Math.log(1 + effectiveAccessCount);
+    const effectiveHalfLife = Math.min(
+      RECENCY_HALF_LIFE_DAYS + extension,
+      RECENCY_HALF_LIFE_DAYS * MAX_HALF_LIFE_MULTIPLIER,
+    );
+
     const ageMs = now - record.createdAt;
-    const halfLifeMs = RECENCY_HALF_LIFE_DAYS * 24 * 60 * 60 * 1000;
+    const halfLifeMs = effectiveHalfLife * 24 * 60 * 60 * 1000;
     const ageInHalfLives = ageMs / halfLifeMs;
     const decayFactor = Math.pow(0.5, ageInHalfLives);
+
     return 1 + RECENCY_WEIGHT * decayFactor;
+  }
+
+  private recordAccess(recordId: string): void {
+    const now = Date.now();
+    const existing = this.accessTracker.get(recordId);
+    if (existing) {
+      existing.count += 1;
+      existing.lastAccess = now;
+    } else {
+      this.accessTracker.set(recordId, { count: 1, lastAccess: now });
+    }
+
+    if (!this.accessFlushTimer) {
+      this.accessFlushTimer = setTimeout(() => {
+        this.flushAccessCounts().catch((err) => {
+          log.warn(`Failed to flush access counts: ${err}`);
+        });
+      }, this.ACCESS_FLUSH_INTERVAL_MS);
+    }
+  }
+
+  private async flushAccessCounts(): Promise<void> {
+    if (!this.table || this.accessTracker.size === 0) return;
+
+    const timer = this.accessFlushTimer;
+    if (timer) {
+      clearTimeout(timer);
+      this.accessFlushTimer = null;
+    }
+
+    const entries = Array.from(this.accessTracker.entries());
+    this.accessTracker.clear();
+
+    for (const [recordId, { count, lastAccess }] of entries) {
+      try {
+        await this.table.update({
+          where: `id = '${this.escapeSQL(recordId)}'`,
+          values: {
+            accessCount: count,
+            lastAccessedAt: lastAccess,
+          },
+        });
+      } catch (err) {
+        log.warn(`Failed to update access count for ${recordId}: ${err}`);
+        this.accessTracker.set(recordId, { count, lastAccess });
+      }
+    }
   }
 
   private applyRecencyBoost(
@@ -609,6 +688,8 @@ Only output the scores, nothing else.`;
         validFrom: now,
         validUntil: 0,
         supersededBy: '',
+        accessCount: 0,
+        lastAccessedAt: now,
       };
       await this.table.add([newRecord]);
       return newRecord as MemoryRecord;
@@ -628,6 +709,8 @@ Only output the scores, nothing else.`;
       validFrom: now,
       validUntil: 0,
       supersededBy: '',
+      accessCount: 0,
+      lastAccessedAt: now,
     };
     await this.table.add([record]);
     return record as MemoryRecord;
@@ -942,13 +1025,80 @@ Only output the scores, nothing else.`;
   }
 
   async buildContext(query: string): Promise<string | null> {
+    if (!this.shouldRetrieve(query)) {
+      log.debug(`Skipping retrieval for query: "${query}"`);
+      return null;
+    }
+
     const results = await this.searchAdvanced(query, { topK: 5 });
     if (results.length === 0) return null;
+
+    for (const result of results) {
+      this.recordAccess(result.id);
+    }
 
     return (
       '[MEMORY]\n' +
       results.map((r) => `- ${r.text}`).join('\n') +
       '\n[/MEMORY]'
     );
+  }
+
+  private shouldRetrieve(query: string): boolean {
+    const text = query.trim();
+
+    if (text === 'HEARTBEAT') return false;
+
+    if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]+$/u.test(text)) {
+      return false;
+    }
+
+    const greetingPatterns = [
+      /^(hi|hello|hey|greetings|howdy|hiya)[.!]*\s*$/i,
+      /^(good (morning|afternoon|evening|day))[.!]*$/i,
+      /^hey there[.!]*$/i,
+      /^hi there[.!]*$/i,
+    ];
+    if (greetingPatterns.some((p) => p.test(text))) return false;
+
+    const commandPatterns = [
+      /^\/\w+/,
+      /^(git|npm|yarn|pnpm|docker|kubectl|make|cmake)\s+/,
+      /^pip\s+/,
+      /^cargo\s+/,
+      /^go\s+(get|build|run|test)/,
+    ];
+    if (commandPatterns.some((p) => p.test(text))) return false;
+
+    const confirmationPatterns = [
+      /^(yes|yep|yeah|yup|correct|right|ok|okay|sure|agreed)[.!]*$/i,
+      /^(no|nope|nah|incorrect|wrong)[.!]*$/i,
+      /^(thank you|thanks)[.!]*$/i,
+      /^(好的|可以|行|没问题|同意)[.!]*$/i,
+      /^(嗯|好|是的|对)[.!]*$/i,
+    ];
+    if (confirmationPatterns.some((p) => p.test(text))) return false;
+
+    const memoryKeywords = [
+      /\b(remember|recall|memory|forget|forgot)\b/i,
+      /\b(你记得|记得之前|上次|以前|曾经)\b/u,
+      /\b(过去|历史|过去的事)\b/u,
+    ];
+    if (memoryKeywords.some((p) => p.test(text))) return true;
+
+    const personalInfoKeywords = [
+      /\b(my name|my email|my password|my phone|my address|my preference|my hobby)\b/i,
+      /\b(我的名字|我的邮箱|我的密码|我的电话|我的地址|我的偏好)\b/u,
+    ];
+    if (personalInfoKeywords.some((p) => p.test(text))) return true;
+
+    const isChinese = /[\u4e00-\u9fff]/.test(text);
+    if (isChinese) {
+      if (text.length < 6 && !text.includes('?')) return false;
+    } else {
+      if (text.length < 15 && !text.includes('?')) return false;
+    }
+
+    return true;
   }
 }
