@@ -11,8 +11,9 @@
  *   │     ✅ tool: Read                                    │     展开可见内部步骤
  *   │     ✅ tool: Bash                                    │
  *   │  ✅ tool: tavily_search                              │
+ *   │  🔵 skill: feishu-create-doc                         │
  *   ├─────────────────────────────────────────────────────┤
- *   │ 🧠 当前最新 thinking 原文（实时预览）                    │
+ *   │ 🧠 当前最新 thinking 原文（实时预览）                   │
  *   ├─────────────────────────────────────────────────────┤
  *   │ 回答正文（markdown）                                  │
  *   └─────────────────────────────────────────────────────┘
@@ -634,6 +635,8 @@ export class StreamingCardRenderer {
         step.childSteps.length > 0
       ) {
         elements.push(this.buildSubAgentPanel(step));
+      } else if (step.category === 'skill') {
+        elements.push(this.buildSkillPanel(step));
       } else {
         elements.push(this.buildStepLine(step));
       }
@@ -681,6 +684,45 @@ export class StreamingCardRenderer {
                 text_size: 'notation',
               },
             ],
+    };
+  }
+
+  /**
+   * 构建 Skill 折叠面板。
+   * Skill 类型步骤渲染为可展开的折叠面板，显示 skill 内容摘要。
+   */
+  private buildSkillPanel(step: StepInfo): any {
+    const icon = this.getStepIcon(step);
+    const statusText = step.status === 'running' ? ' · loading...' : '';
+    const statusLabel =
+      step.status === 'success'
+        ? '✓ 已激活'
+        : step.status === 'error'
+          ? '✗ 失败'
+          : '⏳ 等待执行...';
+
+    return {
+      tag: 'collapsible_panel',
+      expanded: false,
+      header: {
+        title: {
+          tag: 'plain_text',
+          content: `${icon}  skill: ${step.label}${statusText}`,
+        },
+        icon_position: 'right',
+        icon_expanded_angle: 90,
+      },
+      border: { color: 'blue', corner_radius: '6px' },
+      background_color: 'blue-50',
+      elements: [
+        {
+          tag: 'markdown',
+          content: step.actionSummary
+            ? `**操作:** ${step.actionSummary}\n\n**状态:** ${statusLabel}`
+            : `**状态:** ${statusLabel}`,
+          text_size: 'notation',
+        },
+      ],
     };
   }
 
@@ -755,7 +797,9 @@ export class StreamingCardRenderer {
     let text: string;
 
     if (step.type === 'thinking') {
-      text = `${icon}  ${step.label}`;
+      const label =
+        step.label.length > 80 ? step.label.slice(0, 77) + '...' : step.label;
+      text = `${icon}  ${label}`;
     } else {
       const prefix =
         step.category === 'skill'
@@ -763,9 +807,15 @@ export class StreamingCardRenderer {
           : step.category === 'subagent'
             ? 'sub-agent'
             : 'tool';
-      text = `${icon}  ${prefix}: ${step.label}`;
+      const label =
+        step.label.length > 30 ? step.label.slice(0, 27) + '...' : step.label;
+      text = `${icon}  ${prefix}: ${label}`;
       if (step.actionSummary) {
-        text += `\n　　${step.actionSummary}`;
+        const summary =
+          step.actionSummary.length > 35
+            ? step.actionSummary.slice(0, 32) + '...'
+            : step.actionSummary;
+        text += `\n　　${summary}`;
       }
     }
 
@@ -778,10 +828,17 @@ export class StreamingCardRenderer {
 
   private getStepIcon(step: StepInfo): string {
     if (step.status === 'running') {
-      return step.type === 'thinking' ? '🧠' : '⏳';
+      if (step.type === 'thinking') return '🧠';
+      if (step.category === 'skill') return '🔵';
+      return '⏳';
     }
-    if (step.status === 'error') return '❌';
-    return step.type === 'thinking' ? '🧠' : '✅';
+    if (step.status === 'error') {
+      if (step.category === 'skill') return '🔵';
+      return '❌';
+    }
+    if (step.type === 'thinking') return '🧠';
+    if (step.category === 'skill') return '🔵';
+    return '✅';
   }
 
   // ==================== Tool Info Resolution ====================
@@ -992,10 +1049,14 @@ export class StreamingCardRenderer {
 
     if (toolName === 'Skill') {
       if (typeof input === 'object' && input !== null) {
-        const detail =
-          input.prompt || input.instruction || input.description || '';
-        if (detail && typeof detail === 'string') {
-          return detail.length > 50 ? detail.slice(0, 47) + '...' : detail;
+        const action =
+          input.action ||
+          input.prompt ||
+          input.instruction ||
+          input.description ||
+          '';
+        if (action && typeof action === 'string') {
+          return action.length > 40 ? action.slice(0, 37) + '...' : action;
         }
       }
       return '';
@@ -1011,13 +1072,13 @@ export class StreamingCardRenderer {
         input.url ||
         input.path;
       if (query && typeof query === 'string') {
-        const display = query.length > 50 ? query.slice(0, 47) + '...' : query;
+        const display = query.length > 40 ? query.slice(0, 37) + '...' : query;
         return display;
       }
     }
 
     const inputStr = typeof input === 'string' ? input : '';
-    if (inputStr && inputStr.length < 60) {
+    if (inputStr && inputStr.length < 50) {
       return inputStr;
     }
 

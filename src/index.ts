@@ -23,6 +23,7 @@ import { readFileTool, writeFileTool, listDirTool } from './tools/files.js';
 import { shellTool } from './tools/shell.js';
 import { webSearchTool } from './tools/web_search.js';
 import { webFetchTool } from './tools/web_fetch.js';
+import { skillTool } from './tools/skill.js';
 import {
   CLIChannelAdapter,
   HTTPChannelAdapter,
@@ -38,8 +39,36 @@ import {
   type FeishuAdapterConfig,
 } from './feishu/index.js';
 import { createDebug } from './utils/debug.js';
+import {
+  loadAllSkills,
+  getSkillEntries,
+  getGlobalLoader,
+} from './skills/index.js';
+import type { SkillEntry } from './skills/types.js';
 
 const log = createDebug('main');
+
+// ─── Skills Cache ────────────────────────────────────────────────────────────
+
+let cachedSkillEntries: SkillEntry[] = [];
+
+async function loadSkills(): Promise<void> {
+  try {
+    await loadAllSkills();
+    cachedSkillEntries = getSkillEntries();
+    log.info(`Loaded ${cachedSkillEntries.length} skills`);
+
+    const loader = getGlobalLoader();
+    loader.onChange((entries) => {
+      cachedSkillEntries = entries;
+      log.info(`Skills updated: ${entries.length} skills available`);
+    });
+    loader.startWatching();
+  } catch (error) {
+    log.warn(`Failed to load skills: ${error}`);
+    cachedSkillEntries = [];
+  }
+}
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -93,6 +122,7 @@ function createMessageHandler(options: {
       agentName: 'fan_bot',
       memory,
       userQuery,
+      skills: cachedSkillEntries,
     });
 
     let responseText = '';
@@ -175,6 +205,8 @@ function createMessageHandler(options: {
  * 主入口函数
  */
 async function main(): Promise<void> {
+  await loadSkills();
+
   const args = parseArgs();
 
   if (args.help) {
@@ -217,6 +249,7 @@ async function startHTTPServer(): Promise<void> {
   registerTool(shellTool);
   registerTool(webSearchTool);
   registerTool(webFetchTool);
+  registerTool(skillTool);
 
   const permissionService = createPermissionService({
     admins: process.env.ADMINS?.split(',') || [],
@@ -281,6 +314,7 @@ async function startFeishuAdapter(): Promise<void> {
   registerTool(shellTool);
   registerTool(webSearchTool);
   registerTool(webFetchTool);
+  registerTool(skillTool);
 
   const permissionService = createPermissionService({
     admins: process.env.ADMINS?.split(',') || [],
@@ -326,14 +360,28 @@ async function startFeishuAdapter(): Promise<void> {
     return messageHandler(message, callbacks);
   });
 
+  async function stopSkillsWatcher(): Promise<void> {
+    try {
+      const loader = getGlobalLoader();
+      loader.stopWatching();
+    } catch (error) {
+      log.warn(`Failed to stop skills watcher: ${error}`);
+    }
+  }
+
+  async function shutdown(adapter?: { close(): Promise<void> }): Promise<void> {
+    log.info('Shutting down...');
+    await stopSkillsWatcher();
+    if (adapter) {
+      await adapter.close();
+    }
+    process.exit(0);
+  }
+
   await adapter.initialize();
   log.info('Feishu adapter started');
 
-  process.on('SIGINT', async () => {
-    log.info('Shutting down...');
-    await adapter.close();
-    process.exit(0);
-  });
+  process.on('SIGINT', () => shutdown(adapter));
 }
 
 /**
@@ -362,6 +410,7 @@ async function startCLIAdapter(
   registerTool(shellTool);
   registerTool(webSearchTool);
   registerTool(webFetchTool);
+  registerTool(skillTool);
 
   const sid = sessionId || `session-${Date.now()}`;
   const initialMessages = await sessionManager.load(sid);

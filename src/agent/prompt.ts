@@ -2,6 +2,8 @@ import { readFile, copyFile } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import type { MemoryService } from '../memory/types.js';
+import type { SkillEntry } from '../skills/types.js';
+import { formatSkillsForPrompt } from '../skills/loader.js';
 
 interface Identity {
   name: string;
@@ -136,9 +138,10 @@ export async function buildSystemPrompt(
     extraContext?: string;
     memory?: MemoryService;
     userQuery?: string;
+    skills?: SkillEntry[];
   } = {},
 ): Promise<string> {
-  const { extraContext, memory, userQuery } = options;
+  const { extraContext, memory, userQuery, skills } = options;
 
   const identity = await loadIdentity();
   const soul = await loadSoul();
@@ -184,8 +187,13 @@ Available tools will be described separately. Always prefer completing tasks ove
     if (ctx) memoryContext = `\n\n${ctx}`;
   }
 
+  let skillsContext = '';
+  if (skills && skills.length > 0) {
+    skillsContext = `\n\n## Available Skills\n\n${formatSkillsForPrompt(skills)}\n\n**How to use skills:**\n1. Before using tools related to a skill, call the \`Skill\` tool with the skill name to declare your intent\n2. Example: \`Skill(skill_name="feishu-create-doc", action="create")\`\n3. This helps track skill usage and provides better visibility to the user\n4. Then proceed with the actual tool calls for that skill\n\nRefer to each skill's SKILL.md file for detailed guidance on tool usage patterns, constraints, and best practices.`;
+  }
+
   const extra = extraContext ? `\n\n${extraContext}` : '';
-  return base + memoryContext + extra;
+  return base + memoryContext + skillsContext + extra;
 }
 
 export { loadIdentity, loadSoul, type Identity, type Soul };

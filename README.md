@@ -69,7 +69,30 @@ ARK_MODEL=ep-your-endpoint-id
 # ANTHROPIC_MODEL=claude-sonnet-4-20250514
 ```
 
-### 3. 启动 CLI
+### 4. 配置飞书 CLI（可选）
+
+如果你需要使用飞书相关功能，需要安装飞书 CLI：
+
+```bash
+npm install
+```
+
+首次使用需要配置：
+
+```bash
+# 初始化配置
+npm run feishu:config
+
+# 登录授权
+npm run feishu:login
+
+# 查看登录状态
+npm run feishu:status
+```
+
+详细说明见下方「飞书 CLI」章节。
+
+### 5. 启动 CLI
 
 ```bash
 npm run cli
@@ -228,3 +251,80 @@ const result = await runAgent({
 
 console.log(result.response);
 ```
+
+## 飞书 CLI
+
+项目集成了 [@larksuite/cli](https://github.com/larksuite/cli)，提供完整的飞书 API 命令行支持。
+
+### 主要功能
+
+| 业务域 | 能力 |
+|--------|------|
+| 📅 日历 | 查看日程、创建日程、邀请参会人、查询忙闲状态 |
+| 💬 即时通讯 | 发送/回复消息、创建和管理群聊、搜索消息 |
+| 📄 云文档 | 创建、读取、更新、搜索文档 |
+| 📁 云空间 | 上传和下载文件、管理权限与评论 |
+| 📊 多维表格 | 创建和管理多维表格、字段、记录、视图 |
+| 📈 电子表格 | 创建、读取、写入、追加、导出表格数据 |
+| ✅ 任务 | 创建、查询、更新、完成任务 |
+| 📚 知识库 | 创建和管理知识空间、节点和文档 |
+| 👤 通讯录 | 按姓名/邮箱/手机号搜索用户 |
+| 📧 邮箱 | 浏览、搜索、阅读邮件，发送、回复、转发 |
+| 🎥 视频会议 | 搜索会议记录、查询会议纪要 |
+
+### 快速配置
+
+```bash
+# 1. 初始化配置
+npm run feishu:config
+
+# 2. 登录授权（推荐使用）
+npm run feishu:login
+
+# 3. 验证配置
+npm run feishu:status
+```
+
+### 常用命令
+
+```bash
+# 查看帮助
+npx lark-cli --help
+
+# 查看文档列表
+npx lark-cli doc list
+
+# 创建文档
+npx lark-cli doc create --title "我的文档"
+
+# 发送消息
+npx lark-cli im send --chat-id oc_xxxx --content "Hello"
+
+# 创建日程
+npx lark-cli calendar +event --title "会议"
+```
+
+### 使用内置的 npm 脚本
+
+| 脚本 | 说明 |
+|------|------|
+| `npm run feishu:config` | 初始化配置 |
+| `npm run feishu:login` | 交互式登录授权 |
+| `npm run feishu:status` | 查看登录状态 |
+| `npm run feishu:doc` | 打开文档帮助 |
+
+### AI Agent Skills
+
+`@larksuite/cli` 还提供了 AI Agent Skills，让 AI 能够更好地操作飞书：
+
+| Skill | 说明 |
+|-------|------|
+| `lark-shared` | 应用配置、认证登录、身份切换 |
+| `lark-calendar` | 日历日程、忙闲查询 |
+| `lark-im` | 发送/回复消息、群聊管理 |
+| `lark-doc` | 创建、读取、更新、搜索文档 |
+| `lark-drive` | 上传、下载文件 |
+| `lark-sheets` | 电子表格操作 |
+| `lark-base` | 多维表格操作 |
+| `lark-task` | 任务管理 |
+| `lark-wiki` | 知识库管理 |

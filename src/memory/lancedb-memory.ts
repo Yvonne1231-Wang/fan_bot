@@ -157,6 +157,27 @@ export class LanceDBMemoryService implements MemoryService {
     return str.replace(/'/g, "''");
   }
 
+  private buildBM25WhereClause(
+    userId: string,
+    scope: Scope | undefined,
+    atTime: number,
+  ): string {
+    const conditions: string[] = [];
+
+    conditions.push("id != '__seed__'");
+    conditions.push(`validFrom <= ${atTime}`);
+    conditions.push(`(validUntil = 0 OR validUntil > ${atTime})`);
+    conditions.push(
+      `(scope = 'global' OR userId = '${this.escapeSQL(userId)}')`,
+    );
+
+    if (scope) {
+      conditions.push(`scope = '${scope}'`);
+    }
+
+    return conditions.join(' AND ');
+  }
+
   private parseScope(scopeStr?: string): Scope {
     if (scopeStr === 'user' || scopeStr === 'agent' || scopeStr === 'global') {
       return scopeStr;
@@ -412,17 +433,16 @@ Only output the scores, nothing else.`;
 
     let vectorResults = (await this.table
       .vectorSearch(queryVector)
-      .limit(topK * 3)
+      .limit(topK * 5)
       .toArray()) as InternalRecord[];
 
-    vectorResults = vectorResults.filter((r) => r.id !== '__seed__');
-    vectorResults = vectorResults.filter((r) => this.isValidAtTime(r, atTime));
-    vectorResults = vectorResults.filter((r) =>
-      this.matchesUser(r, targetUserId),
+    vectorResults = vectorResults.filter(
+      (r) =>
+        r.id !== '__seed__' &&
+        this.isValidAtTime(r, atTime) &&
+        this.matchesUser(r, targetUserId) &&
+        (!scope || r.scope === scope),
     );
-    if (scope) {
-      vectorResults = vectorResults.filter((r) => r.scope === scope);
-    }
 
     const bm25Results: InternalRecord[] = [];
     try {
@@ -431,32 +451,36 @@ Only output the scores, nothing else.`;
         .split(/\s+/)
         .filter((w) => w.length > 1);
       if (queryWords.length > 0) {
+        const whereClause = this.buildBM25WhereClause(
+          targetUserId,
+          scope,
+          atTime,
+        );
+
+        // 限制 BM25 扫描数量，只取最近的记录
+        const BM25_SCAN_LIMIT = 500;
         let allRecords = (await this.table
           .query()
+          .where(whereClause)
+          .limit(BM25_SCAN_LIMIT)
           .toArray()) as InternalRecord[];
-        allRecords = allRecords.filter((r) => r.id !== '__seed__');
-        allRecords = allRecords.filter((r) => this.isValidAtTime(r, atTime));
-        allRecords = allRecords.filter((r) =>
-          this.matchesUser(r, targetUserId),
-        );
-        if (scope) {
-          allRecords = allRecords.filter((r) => r.scope === scope);
+
+        if (allRecords.length > 0) {
+          const scored = allRecords
+            .map((r) => {
+              const textLower = r.text.toLowerCase();
+              let matches = 0;
+              for (const word of queryWords) {
+                if (textLower.includes(word)) matches++;
+              }
+              return { record: r, matches };
+            })
+            .filter((item) => item.matches > 0)
+            .sort((a, b) => b.matches - a.matches)
+            .slice(0, topK * 2);
+
+          bm25Results.push(...scored.map((s) => s.record));
         }
-
-        const scored = allRecords
-          .map((r) => {
-            const textLower = r.text.toLowerCase();
-            let matches = 0;
-            for (const word of queryWords) {
-              if (textLower.includes(word)) matches++;
-            }
-            return { record: r, matches };
-          })
-          .filter((item) => item.matches > 0)
-          .sort((a, b) => b.matches - a.matches)
-          .slice(0, topK * 2);
-
-        bm25Results.push(...scored.map((s) => s.record));
       }
     } catch (error) {
       log.warn(

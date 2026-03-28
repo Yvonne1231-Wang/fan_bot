@@ -50,6 +50,18 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
   /** 活跃的卡片渲染器映射：messageId -> renderer */
   private activeRenderers = new Map<string, StreamingCardRenderer>();
 
+  /** 消息去重：messageId -> timestamp (TTL 12小时) */
+  private messageDedupMap = new Map<string, number>();
+  private dedupCleanupInterval: ReturnType<typeof setInterval> | null = null;
+  private readonly DEDUP_TTL_MS = 12 * 60 * 60 * 1000; // 12小时
+  private readonly DEDUP_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5分钟清扫
+
+  /** 消息过期时间阈值（毫秒），默认30分钟 */
+  private readonly MESSAGE_EXPIRE_MS = 30 * 60 * 1000;
+
+  /** 并发串行化：accountId:chatId -> Promise chain */
+  private chatTaskQueues = new Map<string, Promise<void>>();
+
   constructor(config: FeishuAdapterConfig) {
     super({ ...config, channelType: 'feishu' });
     this.feishuConfig = config;
@@ -93,7 +105,76 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
       eventDispatcher: this.eventDispatcher,
     });
 
+    this.startDedupCleanup();
+
     log.info('Feishu adapter initialized, waiting for messages...');
+  }
+
+  private startDedupCleanup(): void {
+    this.dedupCleanupInterval = setInterval(() => {
+      this.cleanupExpiredDedupEntries();
+    }, this.DEDUP_CLEANUP_INTERVAL_MS);
+  }
+
+  private cleanupExpiredDedupEntries(): void {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [messageId, timestamp] of this.messageDedupMap.entries()) {
+      if (now - timestamp > this.DEDUP_TTL_MS) {
+        this.messageDedupMap.delete(messageId);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) {
+      log.debug(`Cleaned up ${cleaned} expired dedup entries`);
+    }
+  }
+
+  private isDuplicateMessage(messageId: string): boolean {
+    const now = Date.now();
+    const existing = this.messageDedupMap.get(messageId);
+    if (existing && now - existing < this.DEDUP_TTL_MS) {
+      log.debug(`Duplicate message detected: ${messageId}`);
+      return true;
+    }
+    this.messageDedupMap.set(messageId, now);
+    return false;
+  }
+
+  private isMessageExpired(createTime: number): boolean {
+    const now = Date.now();
+    const age = now - createTime;
+    if (age > this.MESSAGE_EXPIRE_MS) {
+      log.debug(`Message expired: age=${age}ms > ${this.MESSAGE_EXPIRE_MS}ms`);
+      return true;
+    }
+    return false;
+  }
+
+  private async enqueueFeishuChatTask(
+    accountId: string,
+    chatId: string,
+    task: () => Promise<void>,
+  ): Promise<void> {
+    const key = `${accountId}:${chatId}`;
+    const existingQueue = this.chatTaskQueues.get(key);
+
+    const newQueue = (async () => {
+      if (existingQueue) {
+        await existingQueue;
+      }
+      await task();
+    })();
+
+    this.chatTaskQueues.set(key, newQueue);
+
+    try {
+      await newQueue;
+    } finally {
+      if (this.chatTaskQueues.get(key) === newQueue) {
+        this.chatTaskQueues.delete(key);
+      }
+    }
   }
 
   async send(
@@ -182,6 +263,10 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
     if (this.wsClient) {
       this.wsClient.close();
       this.wsClient = null;
+    }
+    if (this.dedupCleanupInterval) {
+      clearInterval(this.dedupCleanupInterval);
+      this.dedupCleanupInterval = null;
     }
     log.info('Feishu adapter closed');
   }
@@ -333,6 +418,32 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
   }
 
   private async processFeishuMessage(event: FeishuMessageEvent): Promise<void> {
+    if (!this.messageHandler) {
+      log.error('No message handler set');
+      return;
+    }
+
+    if (this.isDuplicateMessage(event.messageId)) {
+      log.info(`Skipping duplicate message: ${event.messageId}`);
+      return;
+    }
+
+    if (this.isMessageExpired(event.message.createTime)) {
+      log.info(
+        `Skipping expired message: ${event.messageId}, age: ${Date.now() - event.message.createTime}ms`,
+      );
+      return;
+    }
+
+    const accountId = this.feishuConfig.appId;
+    const chatId = event.message.chatId;
+
+    await this.enqueueFeishuChatTask(accountId, chatId, async () => {
+      await this.doProcessMessage(event);
+    });
+  }
+
+  private async doProcessMessage(event: FeishuMessageEvent): Promise<void> {
     if (!this.messageHandler) {
       log.error('No message handler set');
       return;
