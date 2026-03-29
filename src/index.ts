@@ -115,8 +115,12 @@ function initMemoryWithLLM(llmClient: LLMClient): void {
 function initCronScheduler(options: {
   llmClient: LLMClient;
   messageHandler: MessageHandler;
+  resultSender?: (
+    result: string,
+    context: import('./transport/unified.js').MessageContext,
+  ) => Promise<void>;
 }): CronScheduler {
-  const { llmClient, messageHandler } = options;
+  const { llmClient, messageHandler, resultSender } = options;
 
   const store = new CronStore();
   const executor = new CronExecutor({
@@ -124,6 +128,7 @@ function initCronScheduler(options: {
     toolRegistry: registry,
     memory: getMemory(),
     notificationHandler: messageHandler,
+    resultSender,
   });
   const scheduler = new CronScheduler(store, executor);
 
@@ -422,7 +427,27 @@ async function startFeishuAdapter(): Promise<void> {
     return messageHandler(message, callbacks);
   });
 
-  const cronScheduler = initCronScheduler({ llmClient, messageHandler });
+  const resultSender = async (
+    result: string,
+    context: import('./transport/unified.js').MessageContext,
+  ) => {
+    await adapter.send(
+      {
+        id: `cron-${Date.now()}`,
+        messageId: '',
+        content: [{ type: 'text', text: result }],
+        timestamp: Date.now(),
+        done: true,
+      },
+      context,
+    );
+  };
+
+  const cronScheduler = initCronScheduler({
+    llmClient,
+    messageHandler,
+    resultSender,
+  });
   await cronScheduler.start();
 
   async function stopSkillsWatcher(): Promise<void> {

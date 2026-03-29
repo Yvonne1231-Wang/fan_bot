@@ -7,6 +7,7 @@ import type { CronExecutor } from './executor.js';
 import type { CronStore } from './store.js';
 import { createDebug } from '../utils/debug.js';
 import cron, { type ScheduledTask } from 'node-cron';
+import cron_parser from 'cron-parser';
 
 const log = createDebug('cron:scheduler');
 
@@ -144,7 +145,26 @@ export class CronScheduler {
           return;
         }
 
-        const result = await this.executor.execute(task);
+        const context = task.notificationTarget
+          ? {
+              channel: 'feishu' as const,
+              userId: 'cron-system',
+              sessionId: `cron-${task.id}`,
+              metadata: {
+                chatId: task.notificationTarget.chatId,
+                receiveIdType:
+                  task.notificationTarget.receiveIdType || 'chat_id',
+              },
+            }
+          : undefined;
+
+        const result = await this.executor.execute(task, context);
+
+        if (task.runOnce) {
+          log.info(`One-time task ${task.name} completed, removing...`);
+          await this.store.delete(task.id);
+          return;
+        }
 
         const nextRunAt = this.calculateNextRunTime(task.cronExpression);
 
@@ -182,58 +202,13 @@ export class CronScheduler {
    * 计算 cron 表达式下一次运行时间
    */
   private calculateNextRunTime(cronExpression: string): number {
-    const parts = cronExpression.trim().split(/\s+/);
-    const now = new Date();
-    const currentMinutes = now.getMinutes();
-    const currentHour = now.getHours();
-    const currentDay = now.getDate();
-    const currentMonth = now.getMonth();
-    const currentYear = now.getFullYear();
-
-    let [minute, hour, day, month, weekday] = parts;
-
-    const nextMinute = this.parseField(minute, 0, 59);
-    let nextHour = this.parseField(hour, 0, 23);
-    let nextDay = this.parseField(day, 1, 31);
-    let nextMonth = this.parseField(month, 1, 12) - 1;
-    let nextWeekday = this.parseField(weekday, 0, 6);
-
-    let year = currentYear;
-    if (
-      nextMonth < currentMonth ||
-      (nextMonth === currentMonth && nextDay < currentDay) ||
-      (nextMonth === currentMonth &&
-        nextDay === currentDay &&
-        nextHour < currentHour) ||
-      (nextMonth === currentMonth &&
-        nextDay === currentDay &&
-        nextHour === currentHour &&
-        nextMinute <= currentMinutes)
-    ) {
-      year = currentYear + 1;
+    try {
+      const expr = cron_parser.CronExpressionParser.parse(cronExpression);
+      return expr.next().getTime();
+    } catch (error) {
+      log.warn(`Invalid cron expression: ${cronExpression}`);
+      return Date.now() + 60 * 60 * 1000;
     }
-
-    return new Date(year, nextMonth, nextDay, nextHour, nextMinute).getTime();
-  }
-
-  /**
-   * 解析 cron 字段
-   */
-  private parseField(field: string, min: number, max: number): number {
-    if (field === '*') return min;
-
-    if (field.startsWith('*/')) {
-      const interval = parseInt(field.slice(2), 10);
-      const current = min;
-      return Math.ceil(current / interval) * interval;
-    }
-
-    if (field.includes('-')) {
-      const [start, end] = field.split('-').map(Number);
-      return start;
-    }
-
-    return parseInt(field, 10);
   }
 
   /**

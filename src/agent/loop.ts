@@ -117,11 +117,49 @@ function hasRepetitiveContent(text: string, minRepeats = 3): boolean {
 
 function isConverging(messages: Message[]): boolean {
   if (messages.length < 3) return false;
+
   const recent = messages.slice(-3);
+
+  if (isToolLoop(recent)) {
+    return true;
+  }
+
   const texts = recent.map((m) => extractText(m.content));
   const nonEmpty = texts.filter((t) => t.length > 10);
   if (nonEmpty.length < 3) return false;
   return nonEmpty[0] === nonEmpty[1] && nonEmpty[1] === nonEmpty[2];
+}
+
+function isToolLoop(messages: Message[]): boolean {
+  const recentToolCalls: Array<{ name: string; input: string }> = [];
+
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') break;
+    for (const block of msg.content) {
+      if (block.type === 'tool_use') {
+        recentToolCalls.push({
+          name: block.name,
+          input: JSON.stringify(block.input),
+        });
+      }
+    }
+  }
+
+  if (recentToolCalls.length < 3) return false;
+
+  const last = recentToolCalls[recentToolCalls.length - 1];
+  let matchCount = 1;
+
+  for (let i = recentToolCalls.length - 2; i >= 0; i--) {
+    const prev = recentToolCalls[i];
+    if (prev.name === last.name && prev.input === last.input) {
+      matchCount++;
+    } else {
+      break;
+    }
+  }
+
+  return matchCount >= 3;
 }
 
 function isRetryable(error: Error): boolean {

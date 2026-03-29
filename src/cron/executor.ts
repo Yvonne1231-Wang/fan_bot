@@ -17,6 +17,7 @@ import type {
   UnifiedMessage,
   UnifiedResponse,
   TextContentBlock,
+  MessageContext,
 } from '../transport/unified.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -32,11 +33,16 @@ const execAsync = promisify(exec);
 
 const log = createDebug('cron:executor');
 
+export interface CronResultSender {
+  (result: string, context: MessageContext): Promise<void>;
+}
+
 export interface CronExecutorOptions {
   llmClient: LLMClient;
   toolRegistry: ToolRegistry;
   memory?: MemoryService;
   notificationHandler?: MessageHandler;
+  resultSender?: CronResultSender;
 }
 
 export class CronExecutor {
@@ -48,8 +54,14 @@ export class CronExecutor {
 
   /**
    * 执行单个 cron 任务
+   *
+   * @param task - 要执行的任务
+   * @param context - 可选的发送上下文，用于将结果发送到飞书等渠道
    */
-  async execute(task: CronTask): Promise<CronExecutionResult> {
+  async execute(
+    task: CronTask,
+    context?: MessageContext,
+  ): Promise<CronExecutionResult> {
     log.info(`Executing cron task: ${task.name} (${task.type})`);
 
     const startTime = Date.now();
@@ -81,6 +93,15 @@ export class CronExecutor {
       log.info(
         `Cron task completed: ${task.name} (${executedAt - startTime}ms)`,
       );
+
+      if (context && this.options.resultSender) {
+        try {
+          await this.options.resultSender(result, context);
+          log.debug(`Cron result sent to channel`);
+        } catch (sendError) {
+          log.warn(`Failed to send cron result: ${sendError}`);
+        }
+      }
 
       return {
         taskId: task.id,

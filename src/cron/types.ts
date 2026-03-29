@@ -29,6 +29,11 @@ export interface CronTask {
   cronExpression: string;
   payload: CronTaskPayload;
   enabled: boolean;
+  runOnce?: boolean;
+  notificationTarget?: {
+    chatId: string;
+    receiveIdType?: 'chat_id' | 'open_id';
+  };
   createdAt: number;
   updatedAt: number;
   lastRunAt?: number;
@@ -45,6 +50,11 @@ export interface CreateCronTaskInput {
   cronExpression: string;
   payload: CronTaskPayload;
   enabled?: boolean;
+  runOnce?: boolean;
+  notificationTarget?: {
+    chatId: string;
+    receiveIdType?: 'chat_id' | 'open_id';
+  };
 }
 
 export interface CronExecutionResult {

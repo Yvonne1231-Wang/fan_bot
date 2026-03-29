@@ -2,39 +2,40 @@
 
 一个轻量级、无框架的 TypeScript AI Agent，支持多 Provider（Anthropic Claude、Ark）和工具调用。具备自动记忆提取、用户隔离、上下文压缩等高级特性。
 
+## 特性
+
+- **多 Provider**：Anthropic Claude / 字节跳动 Ark（火山引擎）
+- **混合检索**：向量搜索 + BM25 混合检索
+- **真 BM25**：Okapi BM25 算法，含 IDF 权重和文档长度归一化
+- **Cross-Encoder Reranking**：Jina rerank API 支持
+- **自适应检索门控**：智能判断是否需要查记忆
+- **记忆遗忘与强化**：基于间隔重复的记忆衰减机制
+- **自动记忆提取**：从对话中自动提取关键信息
+- **会话持久化**：JSONL 文件存储，自动压缩
+- **Cron 任务**：支持签名验证的安全定时任务
+- **飞书集成**：完整的飞书 Skills 生态
+
 ## 项目结构
 
 ```
 fan_bot/
 ├── src/
-│   ├── agent/           # Agent 核心逻辑
-│   │   ├── loop.ts      # 主循环：调用 LLM、处理工具调用
-│   │   ├── planner.ts   # 任务规划器
-│   │   └── smoke_test.ts # Agent 模块测试
-│   ├── llm/             # LLM 客户端抽象层
-│   │   ├── anthropic.ts # Anthropic Claude API 实现
-│   │   ├── openai.ts    # OpenAI/Ark API 实现
-│   │   └── types.ts     # 共享类型定义
-│   ├── memory/          # 记忆管理
-│   │   ├── store.ts     # 记忆存储（向量搜索 + BM25）
-│   │   ├── types.ts     # 记忆类型定义
-│   │   └── extractor.ts # 记忆自动提取器
-│   ├── session/         # 会话持久化管理
-│   │   ├── store.ts     # JSONL 文件存储
-│   │   ├── manager.ts   # 会话管理器（加载/保存/裁剪）
-│   │   └── smoke_test.ts # Session 模块测试
-│   ├── tools/           # 工具注册与内置工具
-│   │   ├── registry.ts  # 工具注册表
-│   │   ├── calculator.ts # 内置计算器
-│   │   └── web_search.ts # 网页搜索工具
-│   ├── transport/       # 传输层
-│   │   └── cli.ts       # 命令行交互模式
-│   ├── utils/
-│   │   └── debug.ts     # 调试日志工具
-│   └── index.ts         # 应用入口
-├── dist/                # TypeScript 编译输出
-├── sessions/            # 会话文件存储目录（运行时创建）
-└── memory/              # 记忆文件存储目录（运行时创建）
+│   ├── agent/           # Agent 核心
+│   │   ├── loop.ts      # 主循环
+│   │   ├── planner.ts   # 任务规划
+│   │   ├── memory_extractor.ts  # 记忆提取
+│   │   └── smoke_test.ts
+│   ├── llm/             # LLM 客户端
+│   ├── memory/          # 记忆系统
+│   │   └── lancedb-memory.ts   # LanceDB 向量存储
+│   ├── session/         # 会话管理
+│   ├── tools/           # 工具注册
+│   ├── transport/       # 传输层（CLI/HTTP/Feishu）
+│   ├── cron/           # Cron 任务调度
+│   ├── feishu/         # 飞书集成
+│   └── utils/
+├── sessions/            # 会话存储（运行时创建）
+└── memory/             # 记忆存储（运行时创建）
 ```
 
 ## 快速开始
@@ -47,8 +48,6 @@ npm install
 
 ### 2. 配置环境变量
 
-复制 `.env.example` 为 `.env`，填入你的 API Key：
-
 ```bash
 cp .env.example .env
 ```
@@ -56,275 +55,232 @@ cp .env.example .env
 编辑 `.env`：
 
 ```bash
-# 选择提供商：anthropic 或 ark
-LLM_PROVIDER=ark
+# LLM Provider
+LLM_PROVIDER=anthropic
 
-# Ark（字节跳动火山引擎）
-ARK_API_KEY=your-ark-api-key
-ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-ARK_MODEL=ep-your-endpoint-id
+# Anthropic
+ANTHROPIC_API_KEY=sk-ant-xxx
+ANTHROPIC_MODEL=claude-sonnet-4-6
 
-# 或使用 Anthropic
-# ANTHROPIC_API_KEY=sk-ant-xxx
-# ANTHROPIC_MODEL=claude-sonnet-4-20250514
+# 或 Ark（火山引擎）
+# LLM_PROVIDER=ark
+# ARK_API_KEY=xxx
+# ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+# ARK_MODEL=ep-xxx
+
+# Jina API（用于 embeddings 和 reranking）
+JINA_API_KEY=jina_xxx
+
+# Tavily（可选，用于网页搜索）
+TAVILY_API_KEY=tvly_xxx
 ```
 
-### 4. 配置飞书 CLI（可选）
-
-如果你需要使用飞书相关功能，需要安装飞书 CLI：
+### 3. 启动
 
 ```bash
-npm install
-```
-
-首次使用需要配置：
-
-```bash
-# 初始化配置
-npm run feishu:config
-
-# 登录授权
-npm run feishu:login
-
-# 查看登录状态
-npm run feishu:status
-```
-
-详细说明见下方「飞书 CLI」章节。
-
-### 5. 启动 CLI
-
-```bash
+# CLI 交互模式
 npm run cli
+
+# HTTP 服务模式
+TRANSPORT=http npm run start
+
+# 飞书机器人模式
+TRANSPORT=feishu npm run start
+
+# 开发模式（热重载）
+npm run dev
 ```
 
-交互示例：
+## 使用命令
 
-```
-Fan Bot Agent
-Version: 1.0.0
-User: fan
-Session: 1753681234567-abc123
+| 命令 | 说明 |
+|------|------|
+| `npm run dev` | 开发模式，热重载 |
+| `npm run start` | 生产运行 |
+| `npm run cli` | CLI 交互模式 |
+| `npm run http` | HTTP 服务 |
+| `npm run feishu` | 飞书机器人 |
+| `npm run build` | 编译 TypeScript |
+| `npm run typecheck` | 类型检查 |
+| `npm run test` | 运行测试 |
+| `npm run test:watch` | 测试监听模式 |
+| `npm run smoke` | 冒烟测试 |
+| `npm run smoke:agent` | Agent 模块测试 |
+| `npm run smoke:memory` | Memory 模块测试 |
+| `npm run smoke:session` | Session 模块测试 |
 
-> 你好
-你好！我是你的 AI 助手，很高兴见到你。有什么我可以帮助你的吗？
+## 环境变量
 
-> 搜索一下最新的 AI 新闻
-我来为你搜索最新的 AI 新闻。
+### 必需
 
-[使用工具: web_search]
-[搜索结果...]
+| 变量 | 说明 |
+|------|------|
+| `LLM_PROVIDER` | `anthropic` 或 `ark` |
+| `ANTHROPIC_API_KEY` | Anthropic API Key |
+| `ANTHROPIC_MODEL` | Claude 模型名称 |
+| `ARK_API_KEY` | Ark API Key |
+| `ARK_BASE_URL` | Ark API 端点 |
+| `ARK_MODEL` | Ark 模型 ID |
+| `JINA_API_KEY` | Jina API Key（用于 embeddings） |
 
-> 你还记得我叫什么吗？
-当然记得，你叫 fan。我们之前聊过天。
+### 可选
 
-> exit
-保存记忆...
-再见！期待下次和你聊天。
-```
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `TRANSPORT` | `cli` | 传输模式：`cli`, `http`, `feishu` |
+| `HTTP_PORT` | `3000` | HTTP 服务端口 |
+| `SESSION_DIR` | `./sessions` | 会话存储目录 |
+| `MAX_CONTEXT_MESSAGES` | `40` | 最大上下文消息数 |
+| `MAX_AGENT_ITERATIONS` | `10` | Agent 最大迭代次数 |
+| `DEBUG` | - | 调试日志命名空间 |
 
-## 调试日志
-
-通过环境变量 `DEBUG` 控制调试输出：
+### Debug 日志
 
 ```bash
-# 开启所有调试日志
+# 开启所有调试
 DEBUG=* npm run cli
 
 # 只看 agent 模块
 DEBUG=agent:* npm run cli
 
-# 只看 LLM 调用
-DEBUG=llm:* npm run cli
-
-# 组合多个模块
+# 组合
 DEBUG=agent:loop,llm:* npm run cli
-
-# 关闭调试（默认）
-npm run cli
 ```
-
-调试日志命名空间：
 
 | 命名空间 | 说明 |
 |---------|------|
 | `agent:loop` | Agent 主循环 |
 | `agent:planner` | 任务规划器 |
-| `llm:openai` | OpenAI/Ark API 调用 |
-| `llm:anthropic` | Anthropic API 调用 |
+| `agent:memory_extractor` | 记忆提取 |
+| `memory:lancedb` | LanceDB 记忆 |
+| `llm:openai` | OpenAI/Ark API |
+| `llm:anthropic` | Anthropic API |
 | `session:manager` | 会话管理 |
-| `memory:store` | 记忆存储 |
-| `memory:extractor` | 记忆提取器 |
 | `tools:registry` | 工具注册 |
-| `tools:web_search` | 网页搜索工具 |
 
-## 运行测试
-
-```bash
-# 运行 session 模块测试（不需要 API Key）
-npx tsx src/session/smoke_test.ts
-
-# 运行 agent 模块测试（需要 API Key）
-npx tsx src/agent/smoke_test.ts
-
-# 运行记忆模块测试（需要 API Key）
-npx tsx src/memory/smoke_test.ts
-
-# 类型检查
-npm run typecheck
-
-# 构建
-npm run build
-```
-
-## 架构说明
+## 架构
 
 ```
-用户输入 → transport/cli.ts (REPL)
+用户输入 → Transport Layer（CLI/HTTP/Feishu）
               ↓
-        session/manager.ts (加载/保存会话)
+        Session Manager（加载/保存会话）
               ↓
-        memory/store.ts (检索相关记忆)
+        Memory System（检索相关记忆）
               ↓
-         agent/planner.ts (任务规划)
+        Agent Planner（任务规划）
               ↓
-         agent/loop.ts (主循环)
+        Agent Loop（主循环）
               ↓
       ┌───────┴───────┐
       ↓               ↓
-  llm/anthropic.ts 或 llm/openai.ts (调用 LLM)
+  Anthropic        OpenAI/Ark
       ↓               ↓
       └───────┬───────┘
               ↓
-       tools/registry.ts (工具调用)
+       Tool Registry（工具调用）
               ↓
     ┌─────────┼─────────┐
     ↓         ↓         ↓
-calculator.ts  web_search.ts  ... (更多工具)
+ Calculator  WebSearch  Cron...
               ↓
-      memory/extractor.ts (自动提取记忆)
+    Memory Extractor（自动提取记忆）
 ```
 
-## 核心特性
+## 记忆系统
 
-### 1. 多 Provider 支持
-- Anthropic Claude
-- 字节跳动 Ark（火山引擎）
+### 检索流程
 
-### 2. 智能记忆系统
-- **向量搜索 + BM25** 混合检索
-- **自动记忆提取**：从对话中自动提取关键信息
-- **用户隔离**：多用户场景下数据完全隔离
-- **上下文压缩**：智能裁剪保留关键信息
-
-### 3. 工具生态
-- 内置计算器
-- 网页搜索（Tavily API）
-- 可扩展的工具注册机制
-
-### 4. 持久化
-- 会话历史 JSONL 存储
-- 记忆向量持久化
-- 自动保存/恢复
-
-## 代码中调用
-
-```typescript
-import { createLLMClient, Provider } from './llm/index.js';
-import { runAgent } from './agent/index.js';
-import { registry, registerTool } from './tools/registry.js';
-import { calculatorTool } from './tools/calculator.js';
-
-const llmClient = createLLMClient({
-  provider: Provider.Ark,
-  apiKey: process.env.ARK_API_KEY!,
-});
-
-registerTool(calculatorTool);
-
-const result = await runAgent({
-  prompt: 'Calculate 100 + 200',
-  llmClient,
-  toolRegistry: registry,
-  maxIterations: 10,
-});
-
-console.log(result.response);
+```
+查询 → 自适应门控（跳过打招呼/命令/确认）
+                 ↓
+       向量搜索 → 相似度阈值过滤(0.85)
+                 ↓
+       BM25 检索 → Okapi BM25 + IDF
+                 ↓
+           RRF 融合
+                 ↓
+       时间新鲜度 boost（半衰期14天）
+                 ↓
+       长度归一化（锚点500字符）
+                 ↓
+       Cross-Encoder Rerank（Jina）
+                 ↓
+             Top-K
 ```
 
-## 飞书 CLI
+### 记忆强化机制
 
-项目集成了 [@larksuite/cli](https://github.com/larksuite/cli)，提供完整的飞书 API 命令行支持。
+- 每次手动检索 → `accessCount +1`
+- 访问次数越多 → 半衰期越长 → 衰减越慢
+- 30 天不访问 → 强化效果消退
+- 对数增长 + 最大 3 倍上限
 
-### 主要功能
+### 跳过检索的场景
 
-| 业务域 | 能力 |
-|--------|------|
-| 📅 日历 | 查看日程、创建日程、邀请参会人、查询忙闲状态 |
-| 💬 即时通讯 | 发送/回复消息、创建和管理群聊、搜索消息 |
-| 📄 云文档 | 创建、读取、更新、搜索文档 |
-| 📁 云空间 | 上传和下载文件、管理权限与评论 |
-| 📊 多维表格 | 创建和管理多维表格、字段、记录、视图 |
-| 📈 电子表格 | 创建、读取、写入、追加、导出表格数据 |
-| ✅ 任务 | 创建、查询、更新、完成任务 |
-| 📚 知识库 | 创建和管理知识空间、节点和文档 |
-| 👤 通讯录 | 按姓名/邮箱/手机号搜索用户 |
-| 📧 邮箱 | 浏览、搜索、阅读邮件，发送、回复、转发 |
-| 🎥 视频会议 | 搜索会议记录、查询会议纪要 |
+- 打招呼：`hi`/`hello`/`hey`
+- 命令：`/xxx`、`git`/`npm`/`docker`
+- 确认：`yes`/`no`/`ok`/`好的`
+- 纯 Emoji
+- 心跳消息：`HEARTBEAT`
+- 太短非问句：中文<6字符、英文<15字符
 
-### 快速配置
+## Cron 任务
 
 ```bash
-# 1. 初始化配置
+# 列出任务
+npm run cron:list
+
+# 手动执行任务
+npm run cron:run
+```
+
+Cron 任务支持 HMAC 签名验证，防止篡改：
+
+```bash
+# 配置签名密钥
+CRON_HMAC_SECRET=your-secret
+```
+
+## 飞书集成
+
+```bash
+# 配置
 npm run feishu:config
 
-# 2. 登录授权（推荐使用）
+# 登录
 npm run feishu:login
 
-# 3. 验证配置
+# 状态
 npm run feishu:status
 ```
 
-### 常用命令
-
-```bash
-# 查看帮助
-npx lark-cli --help
-
-# 查看文档列表
-npx lark-cli doc list
-
-# 创建文档
-npx lark-cli doc create --title "我的文档"
-
-# 发送消息
-npx lark-cli im send --chat-id oc_xxxx --content "Hello"
-
-# 创建日程
-npx lark-cli calendar +event --title "会议"
-```
-
-### 使用内置的 npm 脚本
-
-| 脚本 | 说明 |
-|------|------|
-| `npm run feishu:config` | 初始化配置 |
-| `npm run feishu:login` | 交互式登录授权 |
-| `npm run feishu:status` | 查看登录状态 |
-| `npm run feishu:doc` | 打开文档帮助 |
-
-### AI Agent Skills
-
-`@larksuite/cli` 还提供了 AI Agent Skills，让 AI 能够更好地操作飞书：
+支持的 Skills：
 
 | Skill | 说明 |
 |-------|------|
-| `lark-shared` | 应用配置、认证登录、身份切换 |
-| `lark-calendar` | 日历日程、忙闲查询 |
-| `lark-im` | 发送/回复消息、群聊管理 |
-| `lark-doc` | 创建、读取、更新、搜索文档 |
-| `lark-drive` | 上传、下载文件 |
-| `lark-sheets` | 电子表格操作 |
-| `lark-base` | 多维表格操作 |
+| `lark-calendar` | 日历日程 |
+| `lark-im` | 即时通讯 |
+| `lark-doc` | 云文档 |
+| `lark-drive` | 云空间 |
+| `lark-sheets` | 电子表格 |
+| `lark-base` | 多维表格 |
 | `lark-task` | 任务管理 |
-| `lark-wiki` | 知识库管理 |
+| `lark-wiki` | 知识库 |
+| `lark-contact` | 通讯录 |
+| `lark-mail` | 邮箱 |
+
+## 开发
+
+```bash
+# 类型检查
+npm run typecheck
+
+# 运行测试
+npm run test
+
+# 构建
+npm run build
+
+# Smoke 测试
+npm run smoke
+```

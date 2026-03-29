@@ -42,7 +42,8 @@ function validateCronExpression(expression: string): boolean {
   if (parts.length < 5 || parts.length > 6) {
     return false;
   }
-  const cronRegex = /^(\*|([0-9]|1[0-9]|2[0-9]|3[0-9]|4[0-9]|5[0-9])|\*\/[0-9]+|[0-9]+-[0-9]+|[0-9]+,[0-9]+)+$/;
+  const cronRegex =
+    /^(\*|([0-9]|1[0-9]|2[0-9]|3[0-9]|4[0-9]|5[0-9])|\*\/[0-9]+|[0-9]+-[0-9]+|[0-9]+,[0-9]+)+$/;
   return parts.every((part) => cronRegex.test(part));
 }
 
@@ -65,11 +66,20 @@ function formatTaskList(tasks: Awaited<ReturnType<CronStore['list']>>): string {
         ? `\n   Last result: ${task.lastResult.slice(0, 100)}...`
         : '';
 
+    const extras: string[] = [];
+    if (task.runOnce) {
+      extras.push('Run once');
+    }
+    if (task.notificationTarget) {
+      extras.push(`Notify: ${task.notificationTarget.chatId}`);
+    }
+
     return [
       `${status} ${task.name} (${task.id})`,
       `   Type: ${task.type} | Schedule: ${task.cronExpression}`,
       `   Last run: ${lastRun} | Next run: ${nextRun}`,
       `${lastResult}`,
+      `${extras.length > 0 ? `   [${extras.join(', ')}]` : ''}`,
     ].join('\n');
   });
 
@@ -103,6 +113,16 @@ export const cronCreateTool: Tool = {
           description:
             'Cron expression (e.g., "0 8 * * *" for daily at 8am, "*/30 * * * *" for every 30 minutes)',
         },
+        run_once: {
+          type: 'boolean',
+          description:
+            'If true, the task will be automatically deleted after execution (default: false)',
+        },
+        notification_chat_id: {
+          type: 'string',
+          description:
+            'Chat ID to send results to when the task executes. If not specified, results will not be sent anywhere.',
+        },
         prompt: {
           type: 'string',
           description:
@@ -115,12 +135,12 @@ export const cronCreateTool: Tool = {
         },
         command: {
           type: 'string',
-          description:
-            'Shell command to execute (required for type=shell)',
+          description: 'Shell command to execute (required for type=shell)',
         },
         timeout: {
           type: 'number',
-          description: 'Timeout in milliseconds for shell commands (default: 60000)',
+          description:
+            'Timeout in milliseconds for shell commands (default: 60000)',
         },
       },
       required: ['name', 'type', 'cron_expression'],
@@ -173,16 +193,34 @@ export const cronCreateTool: Tool = {
       cronExpression,
       payload,
       enabled: true,
+      runOnce: input.run_once === true,
+      notificationTarget: input.notification_chat_id
+        ? { chatId: String(input.notification_chat_id) }
+        : undefined,
     });
 
     log.info(`Created cron task: ${task.name} (${task.id})`);
 
-    return `Cron task created successfully:
-- ID: ${task.id}
-- Name: ${task.name}
-- Type: ${task.type}
-- Schedule: ${task.cronExpression}
-- Status: ${task.enabled ? 'Enabled' : 'Disabled'}`;
+    const parts = [
+      `Cron task created successfully:`,
+      `- ID: ${task.id}`,
+      `- Name: ${task.name}`,
+      `- Type: ${task.type}`,
+      `- Schedule: ${task.cronExpression}`,
+      `- Status: ${task.enabled ? 'Enabled' : 'Disabled'}`,
+    ];
+
+    if (task.runOnce) {
+      parts.push(`- Run once: Yes (will be deleted after execution)`);
+    }
+
+    if (task.notificationTarget) {
+      parts.push(
+        `- Notification: Will send results to chat ${task.notificationTarget.chatId}`,
+      );
+    }
+
+    return parts.join('\n');
   },
 
   riskLevel: 'medium',
@@ -197,8 +235,7 @@ export const cronCreateTool: Tool = {
 export const cronListTool: Tool = {
   schema: {
     name: 'cron_list',
-    description:
-      'List all cron tasks or get details of a specific task by ID',
+    description: 'List all cron tasks or get details of a specific task by ID',
     input_schema: {
       type: 'object',
       properties: {

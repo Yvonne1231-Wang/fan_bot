@@ -33,8 +33,7 @@ export class CronStore {
   private initialized = false;
 
   constructor(options: CronStoreOptions = {}) {
-    const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
-    const baseDir = options.dir || join(homeDir, CRON_DIR);
+    const baseDir = options.dir || join(process.cwd(), CRON_DIR);
     this.filePath = join(baseDir, CRON_FILE);
   }
 
