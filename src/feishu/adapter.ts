@@ -1,5 +1,6 @@
 // ─── Feishu Channel Adapter ────────────────────────────────────────────────
 
+import { mkdir, writeFile } from 'fs/promises';
 import * as lark from '@larksuiteoapi/node-sdk';
 import {
   BaseChannelAdapter,
@@ -12,6 +13,8 @@ import type {
   StreamEvent,
   ContentBlock,
   MessageContext,
+  ImageContentBlock,
+  FileContentBlock,
 } from '../transport/unified.js';
 import { FeishuService, type FeishuServiceConfig } from './service.js';
 import type { FeishuMessageEvent } from './types.js';
@@ -450,6 +453,8 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
     }
 
     const unifiedMessage = this.toUnifiedMessage(event);
+    await this.downloadMediaIfNeeded(unifiedMessage, event.messageId);
+
     let typingReactionId: string | null = null;
 
     try {
@@ -565,6 +570,12 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
 
   private toUnifiedMessage(event: FeishuMessageEvent): UnifiedMessage {
     const content = this.parseFeishuContent(event.msgType, event.content);
+    log.debug(
+      'toUnifiedMessage: msgType=',
+      event.msgType,
+      'content types=',
+      content.map((c) => c.type),
+    );
     const isGroup = event.chatType === 'group';
 
     return {
@@ -622,19 +633,36 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
   }
 
   private parseRichText(parsed: {
-    rich_text?: Array<Array<{ tag?: string; text?: string; href?: string }>>;
+    rich_text?: Array<
+      Array<{ tag?: string; text?: string; href?: string; image_key?: string }>
+    >;
   }): ContentBlock[] {
     const blocks: ContentBlock[] = [];
 
-    if (parsed.rich_text) {
-      for (const paragraph of parsed.rich_text) {
-        const text = paragraph
-          .filter((el) => el.tag === 'text')
-          .map((el) => el.text || '')
-          .join('');
+    log.debug(
+      'parseRichText: raw parsed=',
+      JSON.stringify(parsed).slice(0, 500),
+    );
+    log.debug('parseRichText: keys=', Object.keys(parsed));
 
-        if (text) {
-          blocks.push({ type: 'text', text });
+    const richText =
+      parsed.rich_text ?? (parsed as any).content ?? (parsed as any).post ?? [];
+    log.debug('parseRichText: richText=', richText?.length);
+
+    if (richText && Array.isArray(richText)) {
+      for (const paragraph of richText) {
+        for (const el of paragraph) {
+          log.debug(
+            'parseRichText: el tag=',
+            el.tag,
+            'image_key=',
+            el.image_key,
+          );
+          if (el.tag === 'img' && el.image_key) {
+            blocks.push({ type: 'image', url: el.image_key });
+          } else if (el.tag === 'text' && el.text) {
+            blocks.push({ type: 'text', text: el.text });
+          }
         }
       }
     }
@@ -684,6 +712,101 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
         done: false,
       });
     }
+  }
+
+  private async downloadMediaIfNeeded(
+    message: UnifiedMessage,
+    messageId: string,
+  ): Promise<void> {
+    const mediaBlocks = message.content.filter(
+      (b) => b.type === 'image' || b.type === 'file',
+    );
+
+    log.debug(
+      'downloadMediaIfNeeded: mediaBlocks=',
+      mediaBlocks.length,
+      'content types=',
+      message.content.map((b) => b.type),
+    );
+
+    if (mediaBlocks.length === 0) return;
+
+    const tmpDir = `${process.env.TMPDIR ?? '/tmp'}/fan_bot_media`;
+    await mkdir(tmpDir, { recursive: true });
+
+    for (const block of mediaBlocks) {
+      if (block.type === 'image') {
+        const imgBlock = block as ImageContentBlock;
+        if (!imgBlock.localPath) {
+          log.debug(
+            'downloadMediaIfNeeded: downloading image from',
+            imgBlock.url,
+            'messageId=',
+            messageId,
+          );
+          try {
+            const buffer = await this.feishuService.downloadResource(
+              messageId,
+              imgBlock.url,
+              'image',
+            );
+            log.debug(
+              'downloadMediaIfNeeded: downloaded buffer size=',
+              buffer.length,
+            );
+            const ext = this.guessExtension(buffer, 'png');
+            const localPath = `${tmpDir}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+            await writeFile(localPath, buffer);
+            imgBlock.localPath = localPath;
+            log.debug('downloadMediaIfNeeded: saved to', localPath);
+          } catch (err) {
+            log.error('downloadMediaIfNeeded: ERROR downloading image:', err);
+          }
+        }
+      } else if (block.type === 'file') {
+        const fileBlock = block as FileContentBlock;
+        if (!fileBlock.localPath) {
+          try {
+            const buffer = await this.feishuService.downloadResource(
+              messageId,
+              fileBlock.url,
+              'file',
+            );
+            const ext = fileBlock.name.split('.').pop() ?? 'bin';
+            const localPath = `${tmpDir}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+            await writeFile(localPath, buffer);
+            fileBlock.localPath = localPath;
+            log.debug('Downloaded file to:', localPath);
+          } catch (err) {
+            log.error('Failed to download file:', err);
+          }
+        }
+      }
+    }
+  }
+
+  private guessExtension(buffer: Buffer, fallback: string): string {
+    if (buffer.length >= 4) {
+      if (
+        buffer[0] === 0x89 &&
+        buffer[1] === 0x50 &&
+        buffer[2] === 0x4e &&
+        buffer[3] === 0x47
+      )
+        return 'png';
+      if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff)
+        return 'jpg';
+      if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46)
+        return 'gif';
+      if (
+        buffer[0] === 0x52 &&
+        buffer[1] === 0x49 &&
+        buffer[2] === 0x46 &&
+        buffer[3] === 0x46
+      )
+        return 'webp';
+    }
+    return fallback;
   }
 }
 

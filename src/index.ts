@@ -44,6 +44,15 @@ import {
   getSkillEntries,
   getGlobalLoader,
 } from './skills/index.js';
+import {
+  runMediaUnderstanding,
+  loadMediaConfigFromEnv,
+  unifiedToMsgContext,
+} from './media-understanding/index.js';
+import type {
+  MediaConfig,
+  MediaUnderstandingResult,
+} from './media-understanding/types.js';
 import type { SkillEntry } from './skills/types.js';
 import { CronStore, CronScheduler, CronExecutor } from './cron/index.js';
 import {
@@ -154,8 +163,9 @@ function createMessageHandler(options: {
   sessionManager: ReturnType<typeof createSessionManager>;
   confirmFn?: (preview: string) => Promise<boolean>;
   onText?: (delta: string) => void;
+  mediaConfig?: MediaConfig;
 }): MessageHandler {
-  const { llmClient, sessionManager, confirmFn, onText } = options;
+  const { llmClient, sessionManager, confirmFn, onText, mediaConfig } = options;
   const memory = getMemory();
 
   return async (
@@ -165,7 +175,6 @@ function createMessageHandler(options: {
     const sessionId = message.context.sessionId;
     const userId = message.context.userId;
 
-    // 为每个用户设置独立的记忆上下文
     if (userId && memory instanceof LanceDBMemoryService) {
       memory.setUserId(userId);
     }
@@ -175,7 +184,11 @@ function createMessageHandler(options: {
       .map((b) => (b as { text: string }).text)
       .join('\n');
 
-    const messages = await sessionManager.load(sessionId);
+    const [messages, mediaResult] = await Promise.all([
+      sessionManager.load(sessionId),
+      runMediaUnderstanding(unifiedToMsgContext(message), mediaConfig!),
+    ]);
+
     const systemPrompt = await buildSystemPrompt({
       agentName: 'fan_bot',
       memory,
@@ -184,9 +197,26 @@ function createMessageHandler(options: {
     });
 
     let responseText = '';
+    let effectivePrompt = userQuery;
+
+    if (mediaResult?.outputs?.length) {
+      const mediaDescriptions: string[] = [];
+      for (const output of mediaResult.outputs) {
+        if (output.capability === 'image') {
+          mediaDescriptions.push(`[Image Description]: ${output.text}`);
+        } else if (output.capability === 'audio') {
+          mediaDescriptions.push(`[Audio Transcription]: ${output.text}`);
+        } else if (output.capability === 'video') {
+          mediaDescriptions.push(`[Video Summary]: ${output.text}`);
+        }
+      }
+      if (mediaDescriptions.length > 0) {
+        effectivePrompt = `${userQuery}\n\n${mediaDescriptions.join('\n')}`;
+      }
+    }
 
     if (shouldPlan(userQuery)) {
-      const plan = await createPlan(userQuery, llmClient);
+      const plan = await createPlan(effectivePrompt, llmClient);
       let lastResult = '';
 
       for (const step of plan.steps) {
@@ -231,7 +261,7 @@ function createMessageHandler(options: {
       });
     } else {
       const result = await runAgent({
-        prompt: userQuery,
+        prompt: effectivePrompt,
         llmClient,
         toolRegistry: registry,
         initialMessages: messages,
@@ -328,9 +358,14 @@ async function startHTTPServer(): Promise<void> {
   registerDefaultTools();
 
   const permissionService = createPermissionServiceFromEnv();
+  const mediaConfig = loadMediaConfigFromEnv();
 
   const adapter = new HTTPChannelAdapter({ port });
-  const messageHandler = createMessageHandler({ llmClient, sessionManager });
+  const messageHandler = createMessageHandler({
+    llmClient,
+    sessionManager,
+    mediaConfig,
+  });
 
   adapter.setMessageHandler(async (message, callbacks) => {
     const permission = await permissionService.checkPermission(message);
@@ -395,6 +430,7 @@ async function startFeishuAdapter(): Promise<void> {
   registerDefaultTools();
 
   const permissionService = createPermissionServiceFromEnv();
+  const mediaConfig = loadMediaConfigFromEnv();
 
   const feishuConfig: FeishuAdapterConfig = {
     appId,
@@ -409,6 +445,7 @@ async function startFeishuAdapter(): Promise<void> {
   const messageHandler = createMessageHandler({
     llmClient,
     sessionManager,
+    mediaConfig,
   });
 
   adapter.setMessageHandler(async (message, callbacks) => {
@@ -517,6 +554,7 @@ async function startCLIAdapter(
   };
 
   const permissionService = createPermissionServiceFromEnv();
+  const mediaConfig = loadMediaConfigFromEnv();
 
   const adapter = new CLIChannelAdapter({
     sessionId: sid,
@@ -532,6 +570,7 @@ async function startCLIAdapter(
     sessionManager,
     confirmFn,
     onText: (delta) => process.stdout.write(delta),
+    mediaConfig,
   });
 
   adapter.setMessageHandler(async (message) => {

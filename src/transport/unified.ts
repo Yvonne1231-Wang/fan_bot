@@ -51,6 +51,7 @@ export interface ImageContentBlock {
   type: 'image';
   url: string;
   alt?: string;
+  localPath?: string;
 }
 
 /**
@@ -62,6 +63,7 @@ export interface FileContentBlock {
   name: string;
   size?: number;
   mimeType?: string;
+  localPath?: string;
 }
 
 /**

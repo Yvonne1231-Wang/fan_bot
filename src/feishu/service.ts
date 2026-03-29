@@ -352,6 +352,35 @@ export class FeishuService {
     const card = this.buildStreamingCard('AI 助手', event.content, event.done);
     await this.updateCardMessage(event.messageId, card);
   }
+
+  async downloadResource(
+    messageId: string,
+    fileKey: string,
+    type: 'image' | 'file' | 'audio' | 'video',
+  ): Promise<Buffer> {
+    log.debug('Downloading resource:', { messageId, fileKey, type });
+
+    const token = await this.getTenantAccessToken();
+    const baseUrl = this.config.useLark
+      ? 'https://open.larksuite.com'
+      : 'https://open.feishu.cn';
+    const url = `${baseUrl}/open-apis/im/v1/messages/${messageId}/resources/${fileKey}?type=${type}`;
+
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to download resource: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
 }
 
 export function createFeishuService(

@@ -4,8 +4,8 @@
  * Debug logging system with namespace filtering.
  *
  * Usage:
- *   import { debug } from './utils/debug.js';
- *   const log = debug('agent:loop');
+ *   import { createDebug } from './utils/debug.js';
+ *   const log = createDebug('agent:loop');
  *
  *   log('Starting agent loop');           // Always logged
  *   log.verbose('Token count: %d', 100);  // Only if DEBUG=agent:* or DEBUG=*
@@ -15,7 +15,13 @@
  *   DEBUG=agent:*              // Enable all agent module debug
  *   DEBUG=agent:loop,llm:*     // Enable specific namespaces
  *   DEBUG=                      // Disable all debug output (default)
+ *
+ * File logging (optional):
+ *   LOG_FILE=./logs/bot.log    // Also write logs to file
  */
+
+import { appendFileSync, existsSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 export enum LogLevel {
   INFO = 'info',
@@ -23,6 +29,33 @@ export enum LogLevel {
   ERROR = 'error',
   DEBUG = 'debug',
   VERBOSE = 'verbose',
+}
+
+let logFilePath: string | null = null;
+
+function getLogFile(): string | null {
+  const logFile = process.env.LOG_FILE;
+  if (!logFile) return null;
+
+  if (!logFilePath) {
+    const dir = dirname(logFile);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    logFilePath = logFile;
+  }
+  return logFilePath;
+}
+
+function writeToFile(output: string): void {
+  const logFile = getLogFile();
+  if (!logFile) return;
+
+  try {
+    appendFileSync(logFile, output + '\n');
+  } catch (err) {
+    console.error('[DEBUG] Failed to write to log file:', err);
+  }
 }
 
 function matchesPattern(pattern: string, namespace: string): boolean {
@@ -112,6 +145,8 @@ export function createDebug(namespace: string): DebugLogger {
       default:
         console.log(output);
     }
+
+    writeToFile(output);
   }
 
   return {
