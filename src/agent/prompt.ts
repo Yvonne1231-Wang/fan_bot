@@ -4,6 +4,9 @@ import { existsSync } from 'fs';
 import type { MemoryService } from '../memory/types.js';
 import type { SkillEntry } from '../skills/types.js';
 import { formatSkillsForPrompt } from '../skills/loader.js';
+import { createDebug } from '../utils/debug.js';
+
+const log = createDebug('agent:prompt');
 
 interface Identity {
   name: string;
@@ -204,8 +207,13 @@ Available tools will be described separately. Always prefer completing tasks ove
 
   let memoryContext = '';
   if (memory && userQuery) {
-    const ctx = await memory.buildContext(userQuery);
-    if (ctx) memoryContext = `\n\n${ctx}`;
+    try {
+      const ctx = await memory.buildContext(userQuery);
+      if (ctx) memoryContext = `\n\n${ctx}`;
+    } catch (err) {
+      log.warn(`Memory context build failed: ${err}`);
+      memoryContext = '\n\n[Memory: temporarily unavailable]';
+    }
   }
 
   let skillsContext = '';
@@ -214,7 +222,23 @@ Available tools will be described separately. Always prefer completing tasks ove
   }
 
   const extra = extraContext ? `\n\n${extraContext}` : '';
-  return base + memoryContext + skillsContext + extra;
+  const now = new Date().toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    weekday: 'long',
+  });
+  return (
+    base +
+    memoryContext +
+    skillsContext +
+    `\n\n## Current Time\n\n${now}` +
+    extra
+  );
 }
 
 export { loadIdentity, loadSoul, type Identity, type Soul };

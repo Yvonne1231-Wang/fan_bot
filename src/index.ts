@@ -13,10 +13,13 @@ import {
   createPlan,
   shouldPlan,
   extractMemories,
+  createSubAgentTools,
+  setSubAgentContext,
 } from './agent/index.js';
 import { createSessionManager, JSONLStore } from './session/index.js';
 import { getMemory, LanceDBMemoryService } from './memory/index.js';
 import { getUserId } from './user.js';
+import { resolve } from 'path';
 import { registry, registerTool } from './tools/registry.js';
 import { calculatorTool } from './tools/calculator.js';
 import { readFileTool, writeFileTool, listDirTool } from './tools/files.js';
@@ -24,6 +27,7 @@ import { shellTool } from './tools/shell.js';
 import { webSearchTool } from './tools/web_search.js';
 import { webFetchTool } from './tools/web_fetch.js';
 import { skillTool } from './tools/skill.js';
+import { describeImageTool } from './media-understanding/describe-image-tool.js';
 import {
   CLIChannelAdapter,
   HTTPChannelAdapter,
@@ -96,16 +100,22 @@ const DEFAULT_MAX_AGENT_ITERATIONS = 10;
 
 /**
  * 注册所有默认工具
+ * 主 Agent 只保留基础工具，复杂任务通过 sub-agent 处理
  */
-function registerDefaultTools(): void {
+function registerDefaultTools(llmClient: LLMClient): void {
   registerTool(calculatorTool);
-  registerTool(readFileTool);
-  registerTool(writeFileTool);
-  registerTool(listDirTool);
-  registerTool(shellTool);
-  registerTool(webSearchTool);
-  registerTool(webFetchTool);
   registerTool(skillTool);
+
+  setSubAgentContext({
+    llmClient,
+    baseRegistry: registry,
+  });
+
+  const subAgentTools = createSubAgentTools();
+  for (const tool of subAgentTools) {
+    registerTool(tool);
+    log.info(`Registered sub-agent tool: ${tool.schema.name}`);
+  }
 }
 
 /**
@@ -203,7 +213,12 @@ function createMessageHandler(options: {
       const mediaDescriptions: string[] = [];
       for (const output of mediaResult.outputs) {
         if (output.capability === 'image') {
-          mediaDescriptions.push(`[Image Description]: ${output.text}`);
+          const pathInfo = output.attachmentPath
+            ? `\n[Image file path: ${output.attachmentPath}]`
+            : '';
+          mediaDescriptions.push(
+            `[Image Description]: ${output.text}${pathInfo}`,
+          );
         } else if (output.capability === 'audio') {
           mediaDescriptions.push(`[Audio Transcription]: ${output.text}`);
         } else if (output.capability === 'video') {
@@ -355,7 +370,7 @@ async function startHTTPServer(): Promise<void> {
   initMemoryWithLLM(llmClient);
   sessionManager.setLLMClient(llmClient);
 
-  registerDefaultTools();
+  registerDefaultTools(llmClient);
 
   const permissionService = createPermissionServiceFromEnv();
   const mediaConfig = loadMediaConfigFromEnv();
@@ -427,7 +442,7 @@ async function startFeishuAdapter(): Promise<void> {
   memory.setUserId(userId);
   sessionManager.setLLMClient(llmClient);
 
-  registerDefaultTools();
+  registerDefaultTools(llmClient);
 
   const permissionService = createPermissionServiceFromEnv();
   const mediaConfig = loadMediaConfigFromEnv();
@@ -531,7 +546,7 @@ async function startCLIAdapter(
   const memory = getMemory();
   memory.setUserId(userId);
 
-  registerDefaultTools();
+  // registerDefaultTools();
 
   const sid = sessionId || `session-${Date.now()}`;
   const initialMessages = await sessionManager.load(sid);

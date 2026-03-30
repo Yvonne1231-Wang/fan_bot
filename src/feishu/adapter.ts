@@ -556,6 +556,14 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
       }
     } catch (error) {
       log.error('Failed to process message:', error);
+      log.error('Error details:', {
+        type: typeof error,
+        constructor: error?.constructor?.name,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        keys: error && typeof error === 'object' ? Object.keys(error) : [],
+        ...(error as object),
+      });
 
       if (typingReactionId) {
         await this.feishuService.removeTypingIndicator(

@@ -20,8 +20,17 @@
  *   LOG_FILE=./logs/bot.log    // Also write logs to file
  */
 
-import { appendFileSync, existsSync, mkdirSync } from 'fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  statSync,
+  renameSync,
+  readdirSync,
+  unlinkSync,
+} from 'fs';
 import { dirname } from 'path';
+import { join } from 'path';
 
 export enum LogLevel {
   INFO = 'info',
@@ -34,7 +43,7 @@ export enum LogLevel {
 let logFilePath: string | null = null;
 
 function getLogFile(): string | null {
-  const logFile = process.env.LOG_FILE;
+  const logFile = process.env.LOG_FILE || './logs/bot.log';
   if (!logFile) return null;
 
   if (!logFilePath) {
@@ -53,8 +62,95 @@ function writeToFile(output: string): void {
 
   try {
     appendFileSync(logFile, output + '\n');
+    maybeRotateLog();
   } catch (err) {
     console.error('[DEBUG] Failed to write to log file:', err);
+  }
+}
+
+let lastRotationCheck = 0;
+const ROTATION_CHECK_INTERVAL = 60 * 1000;
+const DEFAULT_MAX_SIZE_MB = 10;
+const DEFAULT_MAX_AGE_DAYS = 7;
+
+function getMaxSizeBytes(): number {
+  const env = process.env.LOG_MAX_SIZE_MB;
+  return env
+    ? parseInt(env, 10) * 1024 * 1024
+    : DEFAULT_MAX_SIZE_MB * 1024 * 1024;
+}
+
+function getMaxAgeMs(): number {
+  const env = process.env.LOG_MAX_AGE_DAYS;
+  return env
+    ? parseInt(env, 10) * 24 * 60 * 60 * 1000
+    : DEFAULT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+}
+
+function shouldCompressBackup(): boolean {
+  return process.env.LOG_COMPRESS !== 'false';
+}
+
+function rotateLog(): void {
+  const logFile = getLogFile();
+  if (!logFile) return;
+
+  const rotatedFile = `${logFile}.${new Date().toISOString().slice(0, 10)}`;
+  try {
+    renameSync(logFile, rotatedFile);
+    console.log(`[DEBUG] Log rotated to ${rotatedFile}`);
+  } catch (err) {
+    console.error('[DEBUG] Failed to rotate log:', err);
+  }
+}
+
+function cleanupOldLogs(): void {
+  const logFile = getLogFile();
+  if (!logFile) return;
+
+  const logDir = dirname(logFile);
+  const baseName = logFile.split('/').pop() || 'bot.log';
+  const maxAge = getMaxAgeMs();
+  const now = Date.now();
+
+  try {
+    const files = readdirSync(logDir).filter(
+      (f) => f.startsWith(baseName) && f !== baseName,
+    );
+    for (const file of files) {
+      const filePath = join(logDir, file);
+      try {
+        const stat = statSync(filePath);
+        if (now - stat.mtimeMs > maxAge) {
+          unlinkSync(filePath);
+          console.log(`[DEBUG] Deleted old log: ${file}`);
+        }
+      } catch {
+        // skip unreadable files
+      }
+    }
+  } catch {
+    // skip if directory doesn't exist
+  }
+}
+
+function maybeRotateLog(): void {
+  const now = Date.now();
+  if (now - lastRotationCheck < ROTATION_CHECK_INTERVAL) return;
+  lastRotationCheck = now;
+
+  const logFile = getLogFile();
+  if (!logFile) return;
+
+  try {
+    const stat = statSync(logFile);
+    const maxSize = getMaxSizeBytes();
+    if (stat.size > maxSize) {
+      rotateLog();
+    }
+    cleanupOldLogs();
+  } catch {
+    // file might not exist yet
   }
 }
 

@@ -1,4 +1,9 @@
 import type { LLMClient, Message } from '../llm/types.js';
+import type {
+  AgentType,
+  RoutedPlanStep,
+  RoutedPlan as RoutedPlanInterface,
+} from './sub-agents/types.js';
 
 export interface PlanStep {
   index: number;
@@ -23,18 +28,23 @@ export async function createPlan(
   llmClient: LLMClient,
 ): Promise<Plan> {
   const response = await llmClient.chat(
-    [{
-      role: 'user',
-      content: [textBlock(`Break this task into clear numbered steps. Return ONLY a JSON array of step titles, nothing else.
-Task: ${goal}`)],
-    }],
+    [
+      {
+        role: 'user',
+        content: [
+          textBlock(`Break this task into clear numbered steps. Return ONLY a JSON array of step titles, nothing else.
+Task: ${goal}`),
+        ],
+      },
+    ],
     [],
     'You are a task planning assistant. Return ONLY valid JSON arrays like ["Step 1", "Step 2"].',
   );
 
   const text = response.content
     .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-    .map(c => c.text).join('');
+    .map((c) => c.text)
+    .join('');
 
   let stepTitles: string[] = [];
   try {
@@ -67,4 +77,79 @@ export function shouldPlan(message: string): boolean {
     /^\s*(帮我|请你|麻烦).{0,30}(然后|再|接着|最后)/,
   ];
   return planPatterns.some((p) => p.test(message));
+}
+
+export async function createRoutedPlan(
+  goal: string,
+  llmClient: LLMClient,
+): Promise<RoutedPlanInterface> {
+  const response = await llmClient.chat(
+    [
+      {
+        role: 'user',
+        content: [
+          textBlock(`Analyze this task and break it into steps. For each step, determine which specialized agent should handle it.
+
+Agents:
+- vision: Image analysis, describe_image tool
+- web_researcher: Web search, news, products, real-time info
+- coder: Code writing, file operations, shell commands
+- main: General tasks, default
+
+Return ONLY a JSON array of objects with "title" and "agentType" fields. Nothing else.
+Example: [{"title": "Search for the latest news", "agentType": "web_researcher"}, {"title": "Write the code", "agentType": "coder"}]
+
+Task: ${goal}`),
+        ],
+      },
+    ],
+    [],
+    'You are a task planning assistant. Return ONLY valid JSON.',
+  );
+
+  const text = response.content
+    .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
+    .map((c) => c.text)
+    .join('');
+
+  interface ParsedStep {
+    title: string;
+    agentType: string;
+  }
+
+  let parsedSteps: ParsedStep[] = [];
+  try {
+    const match = text.match(/\[[\s\S]*\]/);
+    if (match) {
+      parsedSteps = JSON.parse(match[0]);
+    }
+  } catch {
+    return {
+      id: `plan-${Date.now()}`,
+      goal,
+      steps: [{ index: 0, title: text.trim(), status: 'pending' }],
+      status: 'pending',
+    };
+  }
+
+  const validAgentTypes: AgentType[] = [
+    'vision',
+    'web_researcher',
+    'coder',
+    'main',
+  ];
+
+  return {
+    id: `plan-${Date.now()}`,
+    goal,
+    steps: parsedSteps.map((step, i) => ({
+      index: i,
+      title: step.title,
+      status: 'pending' as const,
+      agentType: validAgentTypes.includes(step.agentType as AgentType)
+        ? (step.agentType as AgentType)
+        : 'main',
+    })),
+    status: 'pending',
+  };
 }

@@ -51,8 +51,8 @@ const RERANK_MODEL = 'jina-reranker-v3';
 const CROSS_ENCODER_WEIGHT = 0.6;
 const ORIGINAL_SCORE_WEIGHT = 0.4;
 
-const JINA_API_URL = 'https://api.jina.ai/v1';
-const JINA_EMBEDDING_MODEL = 'jina-embeddings-v2-base-en';
+const JINA_API_BASE_URL = process.env.JINA_API_BASE_URL || 'https://api.jina.ai/v1';
+const JINA_EMBEDDING_MODEL = process.env.JINA_EMBEDDING_MODEL || 'jina-embeddings-v2-base-en';
 
 export class LanceDBMemoryService implements MemoryService {
   private db: lancedb.Connection | null = null;
@@ -140,7 +140,7 @@ export class LanceDBMemoryService implements MemoryService {
       throw new Error('Jina API key not initialized');
     }
 
-    const response = await fetch(`${JINA_API_URL}/embeddings`, {
+    const response = await fetch(`${JINA_API_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -148,7 +148,12 @@ export class LanceDBMemoryService implements MemoryService {
       },
       body: JSON.stringify({
         model: JINA_EMBEDDING_MODEL,
-        input: [text],
+        messages: [
+          {
+            role: 'user',
+            content: text,
+          },
+        ],
       }),
     });
 
@@ -158,9 +163,20 @@ export class LanceDBMemoryService implements MemoryService {
     }
 
     const data = (await response.json()) as {
-      data: Array<{ embedding: number[] }>;
+      choices: Array<{
+        message: {
+          content: string;
+        };
+      }>;
     };
-    return data.data[0].embedding;
+
+    const embeddingStr = data.choices[0]?.message?.content;
+    if (!embeddingStr) {
+      throw new Error('Empty embedding response');
+    }
+
+    const embedding = JSON.parse(embeddingStr) as number[];
+    return embedding;
   }
 
   private cosineSimilarity(a: number[], b: number[]): number {

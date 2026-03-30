@@ -861,6 +861,19 @@ export class StreamingCardRenderer {
       };
     }
 
+    const subAgentToolNames = ['vision', 'web_researcher', 'coder'];
+    if (subAgentToolNames.includes(toolName)) {
+      const displayNames: Record<string, string> = {
+        vision: 'Vision',
+        web_researcher: 'Web Researcher',
+        coder: 'Coder',
+      };
+      return {
+        category: 'subagent',
+        displayName: displayNames[toolName] || toolName,
+      };
+    }
+
     if (toolName === 'Agent') {
       let agentName = '';
       if (input && typeof input === 'object') {

@@ -10,12 +10,12 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
   '.gif': 'image/gif',
 };
 
-function inferMimeType(path: string): string {
+export function inferMimeType(path: string): string {
   const ext = path.toLowerCase().substring(path.lastIndexOf('.'));
   return IMAGE_MIME_TYPES[ext] ?? 'image/png';
 }
 
-function createOpenAIClient() {
+export function createOpenAIClient(): OpenAI {
   const isArk = !!process.env.ARK_API_KEY;
   if (isArk) {
     return new OpenAI({

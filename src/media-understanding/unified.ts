@@ -1,5 +1,11 @@
-import type { UnifiedMessage, ContentBlock, ImageContentBlock, FileContentBlock } from '../transport/unified.js';
+import type {
+  UnifiedMessage,
+  ContentBlock,
+  ImageContentBlock,
+  FileContentBlock,
+} from '../transport/unified.js';
 import type { MsgContext } from './types.js';
+import { inferMimeType } from './providers/openai.js';
 
 export function unifiedToMsgContext(message: UnifiedMessage): MsgContext {
   const ctx: MsgContext = {
@@ -20,7 +26,9 @@ export function unifiedToMsgContext(message: UnifiedMessage): MsgContext {
       } else {
         mediaUrls.push(imgBlock.url);
       }
-      mediaTypes.push('image/png');
+      mediaTypes.push(
+        imgBlock.localPath ? inferMimeType(imgBlock.localPath) : 'image/png',
+      );
     } else if (block.type === 'file') {
       const fileBlock = block as FileContentBlock;
       if (fileBlock.localPath) {

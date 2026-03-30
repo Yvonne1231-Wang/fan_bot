@@ -123,6 +123,7 @@ async function processAttachment(
         model: entry.type === 'cli' ? entry.command : entry.model,
         cached: false,
         durationMs: Date.now() - start,
+        attachmentPath: path,
       };
 
       await writeCache(cacheKey, output, globalConfig.cache);

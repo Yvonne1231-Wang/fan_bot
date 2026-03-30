@@ -7,6 +7,7 @@ export interface MediaUnderstandingOutput {
   model: string;
   cached: boolean;
   durationMs: number;
+  attachmentPath?: string;
 }
 
 export interface AttachmentDecision {
