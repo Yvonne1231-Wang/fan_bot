@@ -181,33 +181,32 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
   }
 
   async send(
-    response: UnifiedResponse,
-    context: MessageContext,
-  ): Promise<void> {
-    const receiveId = context.metadata.chatId as string;
-    const originalMessageId = context.metadata.originalMessageId as string;
-
-    if (!receiveId) {
-      log.error('No chatId in context');
-      return;
-    }
-
-    const textContent = this.extractTextContent(response);
-
-    if (originalMessageId) {
-      await this.feishuService.replyMessage(
-        originalMessageId,
-        'text',
-        JSON.stringify({ text: textContent }),
-      );
-    } else {
-      await this.feishuService.sendTextMessage(
-        receiveId,
-        'chat_id',
-        textContent,
-      );
-    }
-  }
+response: UnifiedResponse,
+context: MessageContext,
+): Promise<void> {
+const receiveId = context.metadata.chatId as string;
+const receiveIdType = (context.metadata.receiveIdType as 'chat_id' | 'open_id') || 'chat_id';
+const originalMessageId = context.metadata.originalMessageId as string;
+if (!receiveId) {
+log.error('No chatId in context');
+return;
+}
+const textContent = this.extractTextContent(response);
+log.info(`[cron-send] receiveId=${receiveId} receiveIdType=${receiveIdType} hasOriginalMsgId=${!!originalMessageId}`);
+if (originalMessageId) {
+await this.feishuService.replyMessage(
+originalMessageId,
+'text',
+JSON.stringify({ text: textContent }),
+);
+} else {
+await this.feishuService.sendTextMessage(
+receiveId,
+receiveIdType,
+textContent,
+);
+}
+}
 
   async sendStream(event: StreamEvent, context: MessageContext): Promise<void> {
     if (!this.feishuConfig.enableStreamingCard) {

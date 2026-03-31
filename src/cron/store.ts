@@ -158,6 +158,8 @@ export class CronStore {
       cronExpression: input.cronExpression,
       payload: input.payload,
       enabled: input.enabled ?? true,
+      runOnce: input.runOnce,
+      notificationTarget: input.notificationTarget,
       createdAt: now,
       updatedAt: now,
       signature,
@@ -168,7 +170,9 @@ export class CronStore {
     await this.persist();
     this.emit('task:created', task.id, task);
 
-    log.info(`Created cron task: ${task.name} (${task.id})`);
+    log.info(
+      `Created cron task: ${task.name} (${task.id}), notificationTarget: ${JSON.stringify(task.notificationTarget)}, runOnce: ${task.runOnce}`,
+    );
     return task;
   }
 

@@ -91,12 +91,16 @@ function formatTaskList(tasks: Awaited<ReturnType<CronStore['list']>>): string {
  * Cron Create Tool
  *
  * Create a new cron task with specified schedule and action.
+ *
+ * IMPORTANT: When user says "in X minutes", "after X minutes", "X minutes later",
+ * you MUST use delay_minutes parameter instead of cron_expression.
+ * DO NOT calculate the time yourself - use delay_minutes and let the system handle it.
  */
 export const cronCreateTool: Tool = {
   schema: {
     name: 'cron_create',
     description:
-      'Create a new cron task. Supported types: agent (run prompt through AI agent), notification (send a message), shell (execute a shell command).',
+      'Create a new cron task. IMPORTANT: When user says "in X minutes" or "after X minutes", use delay_minutes parameter instead of cron_expression. DO NOT calculate time yourself.',
     input_schema: {
       type: 'object',
       properties: {
@@ -109,15 +113,20 @@ export const cronCreateTool: Tool = {
           enum: ['agent', 'notification', 'shell'],
           description: 'Type of task to execute',
         },
+        delay_minutes: {
+          type: 'number',
+          description:
+            '【REQUIRED for relative time】Use this when user says "in X minutes", "after X minutes", "X minutes later". Example: user says "5分钟后", set delay_minutes=5. DO NOT use cron_expression for relative time.',
+        },
         cron_expression: {
           type: 'string',
           description:
-            'Cron expression (e.g., "0 8 * * *" for daily at 8am, "*/30 * * * *" for every 30 minutes)',
+            '【ONLY for recurring tasks】Use this for daily/weekly schedules like "每天8点" (0 8 * * *) or "每30分钟" (*/30 * * * *). DO NOT use this for "in X minutes" - use delay_minutes instead.',
         },
         run_once: {
           type: 'boolean',
           description:
-            'If true, the task will be automatically deleted after execution (default: false)',
+            'If true, the task will be automatically deleted after execution (default: false). Automatically set to true when delay_minutes is used.',
         },
         notification_chat_id: {
           type: 'string',
@@ -144,19 +153,38 @@ export const cronCreateTool: Tool = {
             'Timeout in milliseconds for shell commands (default: 60000)',
         },
       },
-      required: ['name', 'type', 'cron_expression'],
+      required: ['name', 'type'],
     },
   },
 
   handler: async (input: Record<string, unknown>): Promise<string> => {
     const name = String(input.name);
     const type = input.type as CronTaskType;
-    const cronExpression = String(input.cron_expression);
 
-    if (!validateCronExpression(cronExpression)) {
-      throw new Error(
-        `Invalid cron expression: ${cronExpression}. Expected 5 fields: minute hour day month weekday`,
+    let cronExpression: string;
+    let runOnce: boolean;
+
+    if (input.delay_minutes !== undefined) {
+      const delayMinutes = Number(input.delay_minutes);
+      if (isNaN(delayMinutes) || delayMinutes <= 0) {
+        throw new Error('delay_minutes must be a positive number');
+      }
+      const executeAt = new Date(Date.now() + delayMinutes * 60 * 1000);
+      cronExpression = `${executeAt.getMinutes()} ${executeAt.getHours()} ${executeAt.getDate()} ${executeAt.getMonth() + 1} *`;
+      runOnce = true;
+      log.info(
+        `Delay task: will execute at ${executeAt.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}, cron: ${cronExpression}`,
       );
+    } else if (input.cron_expression) {
+      cronExpression = String(input.cron_expression);
+      runOnce = input.run_once === true;
+      if (!validateCronExpression(cronExpression)) {
+        throw new Error(
+          `Invalid cron expression: ${cronExpression}. Expected 5 fields: minute hour day month weekday`,
+        );
+      }
+    } else {
+      throw new Error('Either cron_expression or delay_minutes is required');
     }
 
     let payload: AgentTaskPayload | NotificationTaskPayload | ShellTaskPayload;
@@ -203,7 +231,7 @@ export const cronCreateTool: Tool = {
       cronExpression,
       payload,
       enabled: true,
-      runOnce: input.run_once === true,
+      runOnce,
       notificationTarget,
     });
 

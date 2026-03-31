@@ -158,6 +158,10 @@ export class CronScheduler {
             }
           : undefined;
 
+        log.info(
+          `Task ${task.name} triggered, notificationTarget: ${JSON.stringify(task.notificationTarget)}, context: ${JSON.stringify(context)}`,
+        );
+
         const result = await this.executor.execute(task, context);
 
         if (task.runOnce) {
@@ -278,8 +282,7 @@ export class CronScheduler {
           sessionId: `cron-${task.id}`,
           metadata: {
             chatId: task.notificationTarget.chatId,
-            receiveIdType:
-              task.notificationTarget.receiveIdType || 'chat_id',
+            receiveIdType: task.notificationTarget.receiveIdType || 'chat_id',
           },
         }
       : undefined;
