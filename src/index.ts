@@ -14,12 +14,10 @@ import {
   shouldPlan,
   extractMemories,
   createSubAgentTools,
-  setSubAgentContext,
 } from './agent/index.js';
 import { createSessionManager, JSONLStore } from './session/index.js';
 import { getMemory, LanceDBMemoryService } from './memory/index.js';
 import { getUserId } from './user.js';
-import { resolve } from 'path';
 import { registry, registerTool } from './tools/registry.js';
 import { calculatorTool } from './tools/calculator.js';
 import { readFileTool, writeFileTool, listDirTool } from './tools/files.js';
@@ -27,7 +25,6 @@ import { shellTool } from './tools/shell.js';
 import { webSearchTool } from './tools/web_search.js';
 import { webFetchTool } from './tools/web_fetch.js';
 import { skillTool } from './tools/skill.js';
-import { describeImageTool } from './media-understanding/describe-image-tool.js';
 import {
   CLIChannelAdapter,
   HTTPChannelAdapter,
@@ -58,7 +55,12 @@ import type {
   MediaUnderstandingResult,
 } from './media-understanding/types.js';
 import type { SkillEntry } from './skills/types.js';
-import { CronStore, CronScheduler, CronExecutor } from './cron/index.js';
+import {
+  CronStore,
+  CronScheduler,
+  CronExecutor,
+  type CronResultSender,
+} from './cron/index.js';
 import {
   cronCreateTool,
   cronListTool,
@@ -105,13 +107,19 @@ const DEFAULT_MAX_AGENT_ITERATIONS = 10;
 function registerDefaultTools(llmClient: LLMClient): void {
   registerTool(calculatorTool);
   registerTool(skillTool);
+  registerTool(shellTool);
+  registerTool(webSearchTool);
+  registerTool(webFetchTool);
+  registerTool(readFileTool);
+  registerTool(writeFileTool);
+  registerTool(listDirTool);
 
-  setSubAgentContext({
+  const subAgentCtx = {
     llmClient,
     baseRegistry: registry,
-  });
+  };
 
-  const subAgentTools = createSubAgentTools();
+  const subAgentTools = createSubAgentTools(subAgentCtx);
   for (const tool of subAgentTools) {
     registerTool(tool);
     log.info(`Registered sub-agent tool: ${tool.schema.name}`);
@@ -174,8 +182,16 @@ function createMessageHandler(options: {
   confirmFn?: (preview: string) => Promise<boolean>;
   onText?: (delta: string) => void;
   mediaConfig?: MediaConfig;
+  getAbortSignal?: () => AbortSignal | undefined;
 }): MessageHandler {
-  const { llmClient, sessionManager, confirmFn, onText, mediaConfig } = options;
+  const {
+    llmClient,
+    sessionManager,
+    confirmFn,
+    onText,
+    mediaConfig,
+    getAbortSignal,
+  } = options;
   const memory = getMemory();
 
   return async (
@@ -247,6 +263,7 @@ function createMessageHandler(options: {
           systemPrompt,
           confirmFn,
           callbacks,
+          abortSignal: getAbortSignal?.(),
         });
         step.status = 'done';
         step.result = result.response;
@@ -287,6 +304,7 @@ function createMessageHandler(options: {
         onText,
         confirmFn,
         callbacks,
+        abortSignal: getAbortSignal?.(),
       });
 
       responseText = result.response;
@@ -403,7 +421,24 @@ async function startHTTPServer(): Promise<void> {
     return { sessions };
   });
 
-  const cronScheduler = initCronScheduler({ llmClient, messageHandler });
+  const httpResultSender: CronResultSender = async (result, context) => {
+    await adapter.send(
+      {
+        id: `cron-${Date.now()}`,
+        messageId: '',
+        content: [{ type: 'text', text: result }],
+        timestamp: Date.now(),
+        done: true,
+      },
+      context,
+    );
+  };
+
+  const cronScheduler = initCronScheduler({
+    llmClient,
+    messageHandler,
+    resultSender: httpResultSender,
+  });
   await cronScheduler.start();
 
   await adapter.initialize();
@@ -461,6 +496,7 @@ async function startFeishuAdapter(): Promise<void> {
     llmClient,
     sessionManager,
     mediaConfig,
+    getAbortSignal: undefined,
   });
 
   adapter.setMessageHandler(async (message, callbacks) => {
@@ -586,25 +622,33 @@ async function startCLIAdapter(
     confirmFn,
     onText: (delta) => process.stdout.write(delta),
     mediaConfig,
+    getAbortSignal: () => abortController?.signal,
   });
 
   adapter.setMessageHandler(async (message) => {
     abortController = new AbortController();
+    adapter.setAbortController(abortController);
 
     const permission = await permissionService.checkPermission(message);
     if (!permission.allowed) {
+      adapter.setAbortController(null);
       return {
         id: `resp-${Date.now()}`,
         messageId: message.id,
         content: [
-          { type: 'text', text: `Permission denied: ${permission.reason}` },
+          { type: 'text', text: `Permission denied:${permission.reason}` },
         ],
         timestamp: Date.now(),
         done: true,
       };
     }
 
-    return messageHandler(message);
+    try {
+      const response = await messageHandler(message);
+      return response;
+    } finally {
+      adapter.setAbortController(null);
+    }
   });
 
   await adapter.initialize();

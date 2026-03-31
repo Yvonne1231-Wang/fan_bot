@@ -10,6 +10,10 @@ import type {
   ToolUseBlock,
   ToolResultBlock,
 } from './types.js';
+import { createDebug } from '../utils/debug.js';
+import { randomUUID } from 'crypto';
+
+const log = createDebug('llm:openai');
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -59,6 +63,7 @@ function toolResultToOpenAIMessage(
   } else {
     content = '';
   }
+
   return {
     role: 'tool',
     tool_call_id: block.tool_use_id,
@@ -125,13 +130,60 @@ function toOpenAIMessages(
 ): OpenAI.Chat.ChatCompletionMessageParam[] {
   const result: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
+  // 第一遍：收集所有 assistant 消息中的 tool_call ID 和 tool_name 的映射
+  // 旧格式的 ID (如 "shell:58") -> 新格式的 UUID (如 "tool_xxx")
+  const idMapping = new Map<string, string>();
+  for (const msg of messages) {
+    if (msg.role === 'assistant') {
+      const toolUseBlocks = msg.content.filter(
+        (b): b is ToolUseBlock => b.type === 'tool_use',
+      );
+      for (const block of toolUseBlocks) {
+        // 如果当前 ID 不是 UUID 格式，生成一个新的 UUID
+        if (!block.id.includes('-')) {
+          const newId = `tool_${randomUUID()}`;
+          idMapping.set(block.id, newId);
+        } else {
+          idMapping.set(block.id, block.id);
+        }
+      }
+    }
+  }
+
   for (const msg of messages) {
     const toolResults = msg.content
       .filter((b): b is ToolResultBlock => b.type === 'tool_result')
-      .map(toolResultToOpenAIMessage);
+      .map((b) => {
+        // 如果 tool_result 的 ID 有映射，使用映射后的 ID
+        const mappedId = idMapping.get(b.tool_use_id) || b.tool_use_id;
+        return {
+          role: 'tool' as const,
+          tool_call_id: mappedId,
+          content:
+            typeof b.content === 'string'
+              ? b.content
+              : Array.isArray(b.content)
+                ? b.content
+                    .filter(
+                      (c): c is { type: 'text'; text: string } =>
+                        c.type === 'text',
+                    )
+                    .map((c) => c.text)
+                    .join('\n')
+                : '',
+        };
+      });
 
     const content = toOpenAIContent(msg.content);
-    const toolCalls = toOpenAIToolCalls(msg.content);
+
+    // 处理 assistant 消息中的 tool_calls，使用映射后的 ID
+    let toolCalls = toOpenAIToolCalls(msg.content);
+    if (toolCalls) {
+      toolCalls = toolCalls.map((tc) => ({
+        ...tc,
+        id: idMapping.get(tc.id) || tc.id,
+      }));
+    }
 
     if (msg.role === 'assistant' && toolCalls) {
       result.push({
@@ -183,9 +235,12 @@ function fromOpenAIResponse(
   if (message.tool_calls) {
     for (const tc of message.tool_calls) {
       if (tc.type === 'function') {
+        // 如果 ID 格式不正确（不是 UUID 格式），生成一个 UUID
+        const toolUseId =
+          tc.id && tc.id.includes('-') ? tc.id : `tool_${randomUUID()}`;
         content.push({
           type: 'tool_use',
-          id: tc.id,
+          id: toolUseId,
           name: tc.function.name,
           input: safeParseJSON(tc.function.arguments),
         });
@@ -350,20 +405,18 @@ export function createOpenAIClient(options: OpenAIClientOptions): LLMClient {
         if (delta?.tool_calls) {
           for (const tc of delta.tool_calls) {
             const idx = tc.index ?? 0;
-            if (tc.id) {
+            if (!toolCalls.has(idx)) {
               toolCalls.set(idx, {
-                id: tc.id,
-                name: tc.function?.name || '',
-                args: tc.function?.arguments || '',
+                id: tc.id ?? '',
+                name: tc.function?.name ?? '',
+                args: tc.function?.arguments ?? '',
               });
-            } else if (tc.function?.arguments) {
-              const existing = toolCalls.get(idx);
-              if (existing) {
+            } else {
+              const existing = toolCalls.get(idx)!;
+              if (tc.id && !existing.id) existing.id = tc.id;
+              if (tc.function?.name) existing.name = tc.function.name;
+              if (tc.function?.arguments)
                 existing.args += tc.function.arguments;
-              }
-              if (tc.function.name && existing) {
-                existing.name = tc.function.name;
-              }
             }
           }
         }
@@ -378,9 +431,12 @@ export function createOpenAIClient(options: OpenAIClientOptions): LLMClient {
 
       // Convert tool calls map to content blocks
       for (const [, tc] of toolCalls) {
+        // 如果 ID 格式不正确（不是 UUID 格式），生成一个 UUID
+        const toolUseId =
+          tc.id && tc.id.includes('-') ? tc.id : `tool_${randomUUID()}`;
         fullContent.push({
           type: 'tool_use',
-          id: tc.id,
+          id: toolUseId,
           name: tc.name,
           input: safeParseJSON(tc.args || '{}'),
         });

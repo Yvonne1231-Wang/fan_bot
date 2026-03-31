@@ -861,12 +861,10 @@ export class StreamingCardRenderer {
       };
     }
 
-    const subAgentToolNames = ['vision', 'web_researcher', 'coder'];
+    const subAgentToolNames = ['vision'];
     if (subAgentToolNames.includes(toolName)) {
       const displayNames: Record<string, string> = {
         vision: 'Vision',
-        web_researcher: 'Web Researcher',
-        coder: 'Coder',
       };
       return {
         category: 'subagent',

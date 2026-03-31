@@ -10,6 +10,8 @@ import type {
 } from './types.js';
 import { log } from '../utils/debug.js';
 
+const LLM_TIMEOUT_MS = 120000;
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 interface AnthropicClientOptions {
@@ -145,6 +147,11 @@ export function createAnthropicClient(
         }),
       );
 
+      const timeoutSignal = AbortSignal.timeout(LLM_TIMEOUT_MS);
+      const combinedSignal = signal
+        ? AbortSignal.any([signal, timeoutSignal])
+        : timeoutSignal;
+
       const response = await client.messages.create(
         {
           model,
@@ -156,7 +163,7 @@ export function createAnthropicClient(
               ? (anthropicTools as Anthropic.Tool[])
               : undefined,
         },
-        { signal },
+        { signal: combinedSignal },
       );
 
       const result: LLMResponse = {
@@ -204,6 +211,11 @@ export function createAnthropicClient(
         }),
       );
 
+      const timeoutSignal = AbortSignal.timeout(LLM_TIMEOUT_MS);
+      const combinedSignal = signal
+        ? AbortSignal.any([signal, timeoutSignal])
+        : timeoutSignal;
+
       const response = await client.messages.create(
         {
           model,
@@ -222,7 +234,7 @@ export function createAnthropicClient(
             : undefined,
           stream: true,
         },
-        { signal },
+        { signal: combinedSignal },
       );
 
       let fullContent: ContentBlock[] = [];

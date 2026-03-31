@@ -55,6 +55,7 @@ export class CLIChannelAdapter extends BaseChannelAdapter {
   private cliConfig: CLIAdapterConfig;
   private currentSessionId: string;
   private sigintCount = 0;
+  private currentAbortController: AbortController | null = null;
 
   constructor(config: CLIAdapterConfig = {}) {
     super({ ...config, channelType: 'cli' });
@@ -200,6 +201,31 @@ export class CLIChannelAdapter extends BaseChannelAdapter {
     this.currentSessionId = sessionId;
   }
 
+  /**
+   * 设置当前任务的 AbortController
+   *
+   * @param controller - AbortController 实例，传入 null 表示任务结束
+   */
+  setAbortController(controller: AbortController | null): void {
+    this.currentAbortController = controller;
+  }
+
+  /**
+   * 停止当前正在执行的任务
+   *
+   * @returns 是否成功停止了任务
+   */
+  stopCurrentTask(): boolean {
+    if (
+      this.currentAbortController &&
+      !this.currentAbortController.signal.aborted
+    ) {
+      this.currentAbortController.abort();
+      return true;
+    }
+    return false;
+  }
+
   private setupSignalHandlers(): void {
     const sigintHandler = () => {
       this.sigintCount++;
@@ -270,6 +296,10 @@ export class CLIChannelAdapter extends BaseChannelAdapter {
         this.printHelp();
         return true;
 
+      case 'stop':
+        this.handleStop();
+        return true;
+
       case 'sessions':
         await this.listSessions(sessionManager);
         return true;
@@ -314,6 +344,7 @@ export class CLIChannelAdapter extends BaseChannelAdapter {
     console.log(`
  Available commands:
   /help              Show this help message
+  /stop              Stop the currently running task
   /sessions          List recent sessions
   /new               Start a new session
   /clear             Clear current session messages
@@ -367,6 +398,20 @@ export class CLIChannelAdapter extends BaseChannelAdapter {
       sessionManager.load(this.currentSessionId).then((messages) => {
         console.log(`Messages: ${messages.length}`);
       });
+    }
+  }
+
+  /**
+   * 处理 /stop 命令
+   *
+   * 停止当前正在执行的任务
+   */
+  private handleStop(): void {
+    const stopped = this.stopCurrentTask();
+    if (stopped) {
+      console.log('[Task stopped]');
+    } else {
+      console.log('No running task to stop');
     }
   }
 

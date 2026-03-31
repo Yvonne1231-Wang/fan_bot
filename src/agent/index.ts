@@ -18,7 +18,6 @@ export {
 } from './memory_extractor.js';
 export {
   createSubAgentTools,
-  setSubAgentContext,
   getSubAgentConfig,
   getAllowedToolsForAgent,
   SUB_AGENT_CONFIGS,

@@ -12,6 +12,7 @@ import type {
   ShellTaskPayload,
 } from '../cron/types.js';
 import { createDebug } from '../utils/debug.js';
+import { getToolContext } from './registry.js';
 
 const log = createDebug('tools:cron');
 
@@ -187,6 +188,15 @@ export const cronCreateTool: Tool = {
     }
 
     const store = getStore();
+    const ctx = getToolContext();
+
+    let notificationTarget = undefined;
+    if (input.notification_chat_id) {
+      notificationTarget = { chatId: String(input.notification_chat_id) };
+    } else if (ctx.channel === 'feishu' && ctx.chatId) {
+      notificationTarget = { chatId: ctx.chatId };
+    }
+
     const task = await store.create({
       name,
       type,
@@ -194,9 +204,7 @@ export const cronCreateTool: Tool = {
       payload,
       enabled: true,
       runOnce: input.run_once === true,
-      notificationTarget: input.notification_chat_id
-        ? { chatId: String(input.notification_chat_id) }
-        : undefined,
+      notificationTarget,
     });
 
     log.info(`Created cron task: ${task.name} (${task.id})`);

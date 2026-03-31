@@ -209,7 +209,15 @@ Available tools will be described separately. Always prefer completing tasks ove
   if (memory && userQuery) {
     try {
       const ctx = await memory.buildContext(userQuery);
-      if (ctx) memoryContext = `\n\n${ctx}`;
+      if (ctx) {
+        memoryContext = `
+
+## Memory System
+
+You have a persistent memory system that stores important information about the user across conversations. When relevant memories are found, they will be provided below. Use this information to personalize your responses and remember user preferences, facts, and context from previous interactions. You DO have long-term memory - the memories below are real stored information.
+
+${ctx}`;
+      }
     } catch (err) {
       log.warn(`Memory context build failed: ${err}`);
       memoryContext = '\n\n[Memory: temporarily unavailable]';

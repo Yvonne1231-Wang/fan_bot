@@ -6,6 +6,23 @@ import { createDebug } from '../utils/debug.js';
 
 const log = createDebug('tools:registry');
 
+interface ToolContext {
+  chatId?: string;
+  userId?: string;
+  sessionId?: string;
+  channel?: string;
+}
+
+let currentContext: ToolContext = {};
+
+export function setToolContext(ctx: ToolContext): void {
+  currentContext = ctx;
+}
+
+export function getToolContext(): ToolContext {
+  return currentContext;
+}
+
 // ─── Registry Implementation ────────────────────────────────────────────────
 
 /**

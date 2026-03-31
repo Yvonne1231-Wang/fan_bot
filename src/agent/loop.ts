@@ -223,7 +223,6 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
 
   const checkAbort = () => {
     if (abortSignal?.aborted) {
-      callbacks?.onError?.('Agent execution cancelled by user');
       throw new Error('Agent execution cancelled by user');
     }
   };

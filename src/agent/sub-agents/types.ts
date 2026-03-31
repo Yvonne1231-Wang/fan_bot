@@ -2,7 +2,7 @@
 
 import type { ToolSchema, LLMClient, AgentCallbacks } from '../../llm/types.js';
 
-export type AgentType = 'vision' | 'web_researcher' | 'coder' | 'main';
+export type AgentType = 'vision' | 'main';
 
 export interface SubAgentConfig {
   type: AgentType;

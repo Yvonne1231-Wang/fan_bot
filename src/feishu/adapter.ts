@@ -5,7 +5,6 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import {
   BaseChannelAdapter,
   type ChannelAdapterConfig,
-  type MessageHandler,
 } from '../transport/adapter.js';
 import type {
   UnifiedMessage,
@@ -21,6 +20,7 @@ import type { FeishuMessageEvent } from './types.js';
 import { FeishuCardClient } from './card-client.js';
 import { StreamingCardRenderer } from './card.js';
 import { createDebug } from '../utils/debug.js';
+import { setToolContext } from '../tools/registry.js';
 
 const log = createDebug('feishu:adapter');
 
@@ -410,6 +410,7 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
           content: message.content ?? '',
           createTime: Number(message.create_time) || Date.now(),
           updateTime: Date.now(),
+          chatType: '',
         },
         chatType: (chatType as 'p2p' | 'group') ?? 'p2p',
         tenantKey: tenantKey ?? '',
@@ -451,6 +452,16 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
       log.error('No message handler set');
       return;
     }
+
+    setToolContext({
+      channel: 'feishu',
+      chatId: event.message.chatId,
+      userId: event.sender.senderId.openId,
+      sessionId:
+        event.chatType === 'group'
+          ? event.message.chatId
+          : event.sender.senderId.openId,
+    });
 
     const unifiedMessage = this.toUnifiedMessage(event);
     await this.downloadMediaIfNeeded(unifiedMessage, event.messageId);
@@ -577,7 +588,11 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
   }
 
   private toUnifiedMessage(event: FeishuMessageEvent): UnifiedMessage {
-    const content = this.parseFeishuContent(event.msgType, event.content);
+    const content = this.parseFeishuContent(
+      event.msgType,
+      event.content,
+      event.mentions,
+    );
     log.debug(
       'toUnifiedMessage: msgType=',
       event.msgType,
@@ -585,7 +600,6 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
       content.map((c) => c.type),
     );
     const isGroup = event.chatType === 'group';
-
     return {
       id: event.messageId,
       context: {
@@ -613,13 +627,22 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
   private parseFeishuContent(
     msgType: string,
     rawContent: string,
+    mentions?: FeishuMessageEvent['mentions'],
   ): ContentBlock[] {
     try {
       const parsed = JSON.parse(rawContent);
 
       switch (msgType) {
-        case 'text':
-          return [{ type: 'text', text: parsed.text || rawContent }];
+        case 'text': {
+          let text = parsed.text || rawContent;
+          if (mentions && mentions.length > 0) {
+            for (const m of mentions) {
+              const replacement = `${m.name}（"open_id":"${m.id.open_id}"）`;
+              text = text.replace(m.key, replacement);
+            }
+          }
+          return [{ type: 'text', text }];
+        }
         case 'post':
           return this.parseRichText(parsed);
         case 'image':

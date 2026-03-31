@@ -65,6 +65,15 @@ export interface GroupPermissionConfig {
 
   /** 是否允许直接调用（不 @） */
   allowDirectCall: boolean;
+
+  /** 群聊中允许的非管理员用户 ID 列表（白名单） */
+  allowedUsers: string[];
+
+  /** 群聊消息频率限制：每个用户每分钟最大消息数（0表示不限制） */
+  rateLimitPerUser: number;
+
+  /** 群聊消息频率限制窗口（毫秒） */
+  rateLimitWindowMs: number;
 }
 
 /**
@@ -100,6 +109,9 @@ export const DEFAULT_PERMISSION_CONFIG: PermissionConfig = {
     forbiddenTools: [],
     allowMention: true,
     allowDirectCall: false,
+    allowedUsers: [],
+    rateLimitPerUser: 10,
+    rateLimitWindowMs: 60000,
   },
   admins: [],
 };
@@ -156,6 +168,7 @@ export interface PermissionService {
  */
 export class DefaultPermissionService implements PermissionService {
   private config: PermissionConfig;
+  private messageTimestamps: Map<string, number[]> = new Map();
 
   constructor(config: Partial<PermissionConfig> = {}) {
     this.config = {
@@ -181,6 +194,10 @@ export class DefaultPermissionService implements PermissionService {
       return { allowed: true };
     }
 
+    if (context.userId === 'cron-system' || context.userId === 'system') {
+      return { allowed: true };
+    }
+
     if (context.groupId) {
       return this.checkGroupPermission(context);
     } else if (context.dmId) {
@@ -203,11 +220,19 @@ export class DefaultPermissionService implements PermissionService {
 
     const config = context.groupId ? this.config.group : this.config.dm;
 
+    if (context.groupId && toolName === 'shell') {
+      return {
+        allowed: false,
+        reason: '群聊中禁止使用 shell 工具',
+        suggestion: '仅管理员可在群聊中使用 shell',
+      };
+    }
+
     if (config.forbiddenTools.includes(toolName)) {
       return {
         allowed: false,
-        reason: `Tool "${toolName}" is forbidden`,
-        suggestion: 'Contact admin to enable this tool',
+        reason: `工具 "${toolName}" 已禁用`,
+        suggestion: '请联系管理员启用',
       };
     }
 
@@ -217,8 +242,8 @@ export class DefaultPermissionService implements PermissionService {
     ) {
       return {
         allowed: false,
-        reason: `Tool "${toolName}" is not in allowed list`,
-        suggestion: 'Use one of the allowed tools or ask admin to add it',
+        reason: `工具 "${toolName}" 不在允许列表中`,
+        suggestion: '请使用允许的工具或联系管理员添加',
       };
     }
 
@@ -252,53 +277,84 @@ export class DefaultPermissionService implements PermissionService {
     if (!groupId) {
       return {
         allowed: false,
-        reason: 'Group ID is missing',
+        reason: '群组 ID 缺失',
       };
+    }
+
+    if (this.isAdmin(userId)) {
+      return { allowed: true };
     }
 
     if (config.blacklist.includes(groupId)) {
       return {
         allowed: false,
-        reason: 'This group is blacklisted',
-        suggestion: 'Contact admin to remove from blacklist',
-      };
-    }
-
-    if (config.defaultPolicy === 'deny') {
-      return {
-        allowed: false,
-        reason: 'Group messages are denied by default',
-        suggestion: 'Add this group to whitelist or change default policy',
+        reason: '此群组已被禁用',
+        suggestion: '请联系管理员启用',
       };
     }
 
     if (
       config.defaultPolicy === 'whitelist' &&
+      config.whitelist.length > 0 &&
       !config.whitelist.includes(groupId)
     ) {
       return {
         allowed: false,
-        reason: 'This group is not in whitelist',
-        suggestion: 'Add this group to whitelist or change default policy',
+        reason: '此群组不在白名单中',
+        suggestion: '请联系管理员将群组加入白名单',
       };
     }
 
-    const isMentioned = metadata.mentioned === true;
+    const rateLimitResult = this.checkRateLimit(userId, groupId);
+    if (!rateLimitResult.allowed) {
+      return rateLimitResult;
+    }
 
-    if (!config.allowMention && isMentioned) {
+    if (!config.allowMention && metadata.mentioned === true) {
       return {
         allowed: false,
-        reason: 'Mentioning the bot is not allowed in this group',
+        reason: '此群组不允许 @ 机器人',
       };
     }
 
-    if (!config.allowDirectCall && !isMentioned) {
+    if (!config.allowDirectCall && metadata.mentioned !== true) {
       return {
         allowed: false,
-        reason: 'Direct call (without mention) is not allowed in this group',
-        suggestion: 'Mention the bot to trigger a response',
+        reason: '此群组不允许直接调用机器人',
+        suggestion: '请 @ 机器人来触发响应',
       };
     }
+
+    return { allowed: true };
+  }
+
+  private checkRateLimit(
+    userId: string,
+    groupId: string,
+  ): PermissionCheckResult {
+    const config = this.config.group;
+
+    if (config.rateLimitPerUser <= 0) {
+      return { allowed: true };
+    }
+
+    const key = `${groupId}:${userId}`;
+    const now = Date.now();
+    const timestamps = this.messageTimestamps.get(key) || [];
+
+    const windowStart = now - config.rateLimitWindowMs;
+    const recentMessages = timestamps.filter((ts) => ts > windowStart);
+
+    if (recentMessages.length >= config.rateLimitPerUser) {
+      return {
+        allowed: false,
+        reason: '消息发送过于频繁，请稍后再试',
+        suggestion: `每分钟最多发送 ${config.rateLimitPerUser} 条消息`,
+      };
+    }
+
+    recentMessages.push(now);
+    this.messageTimestamps.set(key, recentMessages);
 
     return { allowed: true };
   }
@@ -307,19 +363,23 @@ export class DefaultPermissionService implements PermissionService {
     const { userId } = context;
     const config = this.config.dm;
 
+    if (this.isAdmin(userId)) {
+      return { allowed: true };
+    }
+
     if (config.blacklist.includes(userId)) {
       return {
         allowed: false,
-        reason: 'This user is blacklisted',
-        suggestion: 'Contact admin to remove from blacklist',
+        reason: '此用户已被禁用',
+        suggestion: '请联系管理员启用',
       };
     }
 
     if (config.defaultPolicy === 'deny') {
       return {
         allowed: false,
-        reason: 'DM messages are denied by default',
-        suggestion: 'Add this user to whitelist or change default policy',
+        reason: '私聊已被默认禁用',
+        suggestion: '请联系管理员将你加入白名单',
       };
     }
 
@@ -329,8 +389,8 @@ export class DefaultPermissionService implements PermissionService {
     ) {
       return {
         allowed: false,
-        reason: 'This user is not in whitelist',
-        suggestion: 'Add this user to whitelist or change default policy',
+        reason: '此用户不在白名单中',
+        suggestion: '请联系管理员将你加入白名单',
       };
     }
 
@@ -367,6 +427,12 @@ export function createPermissionServiceFromEnv(): PermissionService {
       forbiddenTools: [],
       allowMention: true,
       allowDirectCall: process.env.FEISHU_ALLOW_DIRECT_CALL === 'true',
+      allowedUsers:
+        process.env.FEISHU_GROUP_ALLOWED_USERS?.split(',').filter(Boolean) ||
+        [],
+      rateLimitPerUser: Number(process.env.FEISHU_GROUP_RATE_LIMIT) || 10,
+      rateLimitWindowMs:
+        Number(process.env.FEISHU_GROUP_RATE_LIMIT_WINDOW) || 60000,
     },
   });
 }
@@ -384,6 +450,12 @@ export function getPermissionConfigFromEnv(): PermissionConfig {
       whitelist:
         process.env.FEISHU_GROUP_WHITELIST?.split(',').filter(Boolean) || [],
       allowDirectCall: process.env.FEISHU_ALLOW_DIRECT_CALL === 'true',
+      allowedUsers:
+        process.env.FEISHU_GROUP_ALLOWED_USERS?.split(',').filter(Boolean) ||
+        [],
+      rateLimitPerUser: Number(process.env.FEISHU_GROUP_RATE_LIMIT) || 10,
+      rateLimitWindowMs:
+        Number(process.env.FEISHU_GROUP_RATE_LIMIT_WINDOW) || 60000,
     },
     admins: process.env.ADMINS?.split(',').filter(Boolean) || [],
   };

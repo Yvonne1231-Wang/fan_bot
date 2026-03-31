@@ -271,7 +271,27 @@ export class CronScheduler {
       throw new Error(`Task not found: ${taskId}`);
     }
 
-    const result = await this.executor.execute(task);
+    const context = task.notificationTarget
+      ? {
+          channel: 'feishu' as const,
+          userId: 'cron-system',
+          sessionId: `cron-${task.id}`,
+          metadata: {
+            chatId: task.notificationTarget.chatId,
+            receiveIdType:
+              task.notificationTarget.receiveIdType || 'chat_id',
+          },
+        }
+      : undefined;
+
+    const result = await this.executor.execute(task, context);
+
+    if (task.runOnce) {
+      log.info(`One-time task ${task.name} completed, removing...`);
+      await this.store.delete(task.id);
+      return;
+    }
+
     const nextRunAt = this.calculateNextRunTime(task.cronExpression);
 
     await this.store.updateRunStatus(

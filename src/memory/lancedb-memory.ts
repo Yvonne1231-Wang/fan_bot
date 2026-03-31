@@ -28,7 +28,6 @@ type InternalRecord = Record<string, unknown> & {
   lastAccessedAt: number;
 };
 
-const SIMILARITY_THRESHOLD = 0.85;
 const EMBEDDING_DIMENSION = 768;
 const TABLE_NAME = 'memories';
 const RRF_K = 60;
@@ -46,13 +45,17 @@ const MAX_HALF_LIFE_MULTIPLIER = 3;
 
 const LENGTH_NORM_ANCHOR = 500;
 
-const RERANK_API_URL = 'https://api.jina.ai/v1';
-const RERANK_MODEL = 'jina-reranker-v3';
-const CROSS_ENCODER_WEIGHT = 0.6;
-const ORIGINAL_SCORE_WEIGHT = 0.4;
+function getJinaApiBaseUrl(): string {
+  return process.env.JINA_API_BASE_URL || 'https://api.jina.ai/v1';
+}
 
-const JINA_API_BASE_URL = process.env.JINA_API_BASE_URL || 'https://api.jina.ai/v1';
-const JINA_EMBEDDING_MODEL = process.env.JINA_EMBEDDING_MODEL || 'jina-embeddings-v2-base-en';
+function getJinaEmbeddingModel(): string | undefined {
+  return process.env.JINA_EMBEDDING_MODEL;
+}
+
+function getRerankModel(): string | undefined {
+  return getJinaEmbeddingModel();
+}
 
 export class LanceDBMemoryService implements MemoryService {
   private db: lancedb.Connection | null = null;
@@ -65,8 +68,15 @@ export class LanceDBMemoryService implements MemoryService {
 
   private accessTracker: Map<string, { count: number; lastAccess: number }> =
     new Map();
+  private pendingAccessTracker: Map<
+    string,
+    { count: number; lastAccess: number }
+  > = new Map();
   private accessFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly ACCESS_FLUSH_INTERVAL_MS = 5000;
+
+  /** Embedding 请求队列，确保串行执行 */
+  private embeddingQueue: Promise<number[]> | null = null;
 
   constructor(dbPath: string = '.memory/lancedb', llmClient?: LLMClient) {
     this.dbPath = dbPath;
@@ -140,43 +150,83 @@ export class LanceDBMemoryService implements MemoryService {
       throw new Error('Jina API key not initialized');
     }
 
-    const response = await fetch(`${JINA_API_BASE_URL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.jinaApiKey}`,
-      },
-      body: JSON.stringify({
-        model: JINA_EMBEDDING_MODEL,
-        messages: [
-          {
-            role: 'user',
-            content: text,
-          },
-        ],
-      }),
-    });
+    const maxRetries = 3;
+    const baseDelay = 1000;
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Jina embedding API error: ${error}`);
-    }
+    const doEmbed = async (): Promise<number[]> => {
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          log.debug(
+            `Embedding attempt ${attempt + 1}/${maxRetries} starting...`,
+          );
+          const startTime = Date.now();
 
-    const data = (await response.json()) as {
-      choices: Array<{
-        message: {
-          content: string;
-        };
-      }>;
+          const response = await fetch(`${getJinaApiBaseUrl()}/embeddings`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${this.jinaApiKey}`,
+            },
+            body: JSON.stringify({
+              model: getJinaEmbeddingModel(),
+              input: [text],
+            }),
+            signal: AbortSignal.timeout(15000),
+          });
+
+          const elapsed = Date.now() - startTime;
+          log.debug(
+            `Embedding response received in ${elapsed}ms, status: ${response.status}`,
+          );
+
+          if (!response.ok) {
+            const error = await response.text();
+            throw new Error(`Embedding API error: ${error}`);
+          }
+
+          const data = (await response.json()) as {
+            data?: Array<{
+              embedding?: number[];
+            }>;
+          };
+
+          const embedding = data.data?.[0]?.embedding;
+          if (!embedding) {
+            throw new Error('Empty embedding response');
+          }
+
+          return embedding;
+        } catch (err) {
+          const isNetworkError =
+            err instanceof TypeError && err.message === 'fetch failed';
+          const isTimeoutError =
+            err instanceof Error && err.name === 'TimeoutError';
+          log.debug(
+            `Embedding attempt ${attempt + 1}/${maxRetries} failed: ${isNetworkError ? 'network error' : isTimeoutError ? 'timeout' : err instanceof Error ? err.message : String(err)}`,
+          );
+          if (attempt === maxRetries - 1) {
+            throw err;
+          }
+          if (!isNetworkError && !isTimeoutError) {
+            throw err;
+          }
+          const delay = baseDelay * Math.pow(2, attempt);
+          log.debug(`Retrying in ${delay}ms...`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+      throw new Error('Embedding failed after retries');
     };
 
-    const embeddingStr = data.choices[0]?.message?.content;
-    if (!embeddingStr) {
-      throw new Error('Empty embedding response');
+    if (this.embeddingQueue) {
+      this.embeddingQueue = this.embeddingQueue
+        .catch(() => {})
+        .then(() => doEmbed());
+    } else {
+      this.embeddingQueue = doEmbed();
     }
 
-    const embedding = JSON.parse(embeddingStr) as number[];
-    return embedding;
+    return this.embeddingQueue;
   }
 
   private cosineSimilarity(a: number[], b: number[]): number {
@@ -194,6 +244,35 @@ export class LanceDBMemoryService implements MemoryService {
 
     if (normA === 0 || normB === 0) return 0;
     return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  }
+
+  private async fetchWithRetry(
+    url: string,
+    options: RequestInit,
+    maxRetries: number = 3,
+    baseDelay: number = 500,
+  ): Promise<Response> {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const response = await fetch(url, options);
+        return response;
+      } catch (err) {
+        if (attempt === maxRetries - 1) {
+          throw err;
+        }
+        const isNetworkError =
+          err instanceof TypeError && err.message === 'fetch failed';
+        if (!isNetworkError) {
+          throw err;
+        }
+        const delay = baseDelay * Math.pow(2, attempt);
+        log.debug(
+          `Fetch attempt ${attempt + 1} failed for ${url}, retrying in ${delay}ms...`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+    throw new Error('Fetch failed after retries');
   }
 
   private escapeSQL(str: string): string {
@@ -424,8 +503,11 @@ export class LanceDBMemoryService implements MemoryService {
       this.accessFlushTimer = null;
     }
 
-    const entries = Array.from(this.accessTracker.entries());
-    this.accessTracker.clear();
+    const trackerToFlush = this.accessTracker;
+    this.accessTracker = this.pendingAccessTracker;
+    this.pendingAccessTracker = trackerToFlush;
+
+    const entries = Array.from(trackerToFlush.entries());
 
     for (const [recordId, { count, lastAccess }] of entries) {
       try {
@@ -438,7 +520,15 @@ export class LanceDBMemoryService implements MemoryService {
         });
       } catch (err) {
         log.warn(`Failed to update access count for ${recordId}: ${err}`);
-        this.accessTracker.set(recordId, { count, lastAccess });
+        const existing = this.accessTracker.get(recordId);
+        if (existing) {
+          existing.count += count;
+          if (lastAccess > existing.lastAccess) {
+            existing.lastAccess = lastAccess;
+          }
+        } else {
+          this.accessTracker.set(recordId, { count, lastAccess });
+        }
       }
     }
   }
@@ -548,19 +638,22 @@ export class LanceDBMemoryService implements MemoryService {
     );
 
     try {
-      const response = await fetch(`${RERANK_API_URL}/rerank`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.jinaApiKey}`,
+      const response = await this.fetchWithRetry(
+        `${getJinaApiBaseUrl()}/rerank`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.jinaApiKey}`,
+          },
+          body: JSON.stringify({
+            model: getRerankModel(),
+            query,
+            documents: candidates.map((c) => c.text),
+            top_n: candidates.length,
+          }),
         },
-        body: JSON.stringify({
-          model: RERANK_MODEL,
-          query,
-          documents: candidates.map((c) => c.text),
-          top_n: candidates.length,
-        }),
-      });
+      );
 
       if (!response.ok) {
         log.warn(`Jina rerank API failed: ${response.status}`);
@@ -795,9 +888,7 @@ Only output the scores, nothing else.`;
         r.id !== '__seed__' &&
         this.isValidAtTime(r, atTime) &&
         this.matchesUser(r, targetUserId) &&
-        (!scope || r.scope === scope) &&
-        ((r as Record<string, unknown>)._distance as number) <=
-          1 - SIMILARITY_THRESHOLD,
+        (!scope || r.scope === scope),
     );
 
     const bm25Results: InternalRecord[] = [];
@@ -880,11 +971,19 @@ Only output the scores, nothing else.`;
     }));
   }
 
-  async listAll(scope?: Scope): Promise<MemoryRecord[]> {
+  async listAll(
+    scope?: Scope,
+    limit: number = 1000,
+    offset: number = 0,
+  ): Promise<MemoryRecord[]> {
     await this.initialize();
     if (!this.table) throw new Error('Table not initialized');
 
-    let records = (await this.table.query().toArray()) as InternalRecord[];
+    let records = (await this.table
+      .query()
+      .limit(limit + 1)
+      .offset(offset)
+      .toArray()) as InternalRecord[];
     records = records.filter((r) => r.id !== '__seed__');
     records = records.filter((r) => r.validUntil === 0);
     records = records.filter((r) => this.matchesUser(r));

@@ -277,6 +277,40 @@ export class FeishuService {
     }
   }
 
+  async getBotInfo(): Promise<{ openId: string; name: string } | null> {
+    try {
+      const token = await this.getTenantAccessToken();
+      const baseUrl = this.config.useLark
+        ? 'https://open.larksuite.com'
+        : 'https://open.feishu.cn';
+      const response = await fetch(`${baseUrl}/open-apis/bot/v3/info`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const data = (await response.json()) as {
+        code?: number;
+        msg?: string;
+        bot?: {
+          open_id?: string;
+          name?: string;
+        };
+      };
+      if (data.code !== 0 || !data.bot) {
+        log.error('getBotInfo failed:', data.msg);
+        return null;
+      }
+      return {
+        openId: data.bot.open_id ?? '',
+        name: data.bot.name ?? '',
+      };
+    } catch (error) {
+      log.error('Failed to get bot info:', error);
+      return null;
+    }
+  }
+
   async replyMessage(
     messageId: string,
     msgType: FeishuSendOptions['msgType'],

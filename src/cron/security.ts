@@ -78,7 +78,7 @@ export function isShellCommandAllowed(command: string): boolean {
   }
 
   for (const allowedCmd of allowedArray) {
-    if (command.includes(allowedCmd)) {
+    if (command.trim().startsWith(allowedCmd.trim())) {
       return true;
     }
   }
@@ -195,5 +195,5 @@ export function validateShellCommand(command: string): void {
 }
 
 export function sanitizeShellArgument(arg: string): string {
-  return arg.replace(/[`$\\;*?<>|&`]/g, '').slice(0, 1000);
+  return arg.replace(/[`$\\;*?<>|&'"\s]/g, '').slice(0, 1000);
 }

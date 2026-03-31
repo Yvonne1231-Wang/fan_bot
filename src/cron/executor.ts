@@ -19,17 +19,16 @@ import type {
   TextContentBlock,
   MessageContext,
 } from '../transport/unified.js';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createDebug } from '../utils/debug.js';
 import {
   validateShellCommand,
   isPathAllowed,
-  sanitizeShellArgument,
   SecurityError,
 } from './security.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const log = createDebug('cron:executor');
 
@@ -161,11 +160,29 @@ export class CronExecutor {
    *
    * 通过通知处理器发送消息
    */
+  /**
+   * executeNotification with context:
+   *   - If context + resultSender are available: send directly via resultSender (Feishu push)
+   *   - Otherwise: fall back to notificationHandler (agent pipeline) or console
+   *
+   * NOTE: This method is called by execute(), which already handles the resultSender
+   * send-after-execution path. So here we just return the message text; the caller
+   * routes it to Feishu.
+   */
   private async executeNotification(
     payload: NotificationTaskPayload,
     taskId: string,
   ): Promise<string> {
-    const { notificationHandler } = this.options;
+    // Return the message text directly. The execute() wrapper will forward it
+    // to resultSender when a context is present, which is the correct Feishu
+    // delivery path. We only fall back to notificationHandler when no
+    // resultSender is configured (e.g. CLI mode).
+    const { notificationHandler, resultSender } = this.options;
+
+    if (resultSender) {
+      // Caller (execute()) will call resultSender(result, context) after we return.
+      return payload.message;
+    }
 
     if (!notificationHandler) {
       log.warn(`No notification handler for task ${taskId}, using console`);
@@ -173,6 +190,7 @@ export class CronExecutor {
       return `Notification sent to console: ${payload.message}`;
     }
 
+    // Legacy path: route through agent message pipeline (CLI/HTTP without resultSender)
     const content: TextContentBlock = { type: 'text', text: payload.message };
     const message: UnifiedMessage = {
       id: `notif-${taskId}-${Date.now()}`,
@@ -207,9 +225,11 @@ export class CronExecutor {
 
     validateShellCommand(payload.command);
 
+    // Split command into executable + args array to avoid shell injection
+    const [executable, ...args] = payload.command.trim().split(/\s+/);
+
     try {
-      const sanitizedCommand = sanitizeShellArgument(payload.command);
-      const { stdout, stderr } = await execAsync(sanitizedCommand, {
+      const { stdout, stderr } = await execFileAsync(executable, args, {
         timeout,
         maxBuffer: 5 * 1024 * 1024,
       });

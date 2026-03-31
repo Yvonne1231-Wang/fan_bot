@@ -53,6 +53,7 @@ export interface FeishuMessageEvent {
   /** 会话信息 */
   message: {
     chatId: string;
+    chatType: string;
     messageType: string;
     content: string;
     createTime: number;
@@ -63,7 +64,19 @@ export interface FeishuMessageEvent {
   chatType: 'p2p' | 'group';
 
   /** 租户密钥 */
-  tenantKey: string;
+  tenantKey?: string;
+
+  /** @ 提及列表 */
+  mentions?: Array<{
+    id: {
+      open_id: string;
+      union_id: string;
+      user_id: string;
+    };
+    key: string;
+    name: string;
+    tenant_key?: string;
+  }>;
 }
 
 /**
@@ -77,12 +90,14 @@ export interface FeishuTextContent {
  * 飞书消息内容 - 富文本
  */
 export interface FeishuRichTextContent {
-  richText: Array<Array<{
-    tag: string;
-    text?: string;
-    href?: string;
-    imageKey?: string;
-  }>>;
+  richText: Array<
+    Array<{
+      tag: string;
+      text?: string;
+      href?: string;
+      imageKey?: string;
+    }>
+  >;
 }
 
 /**

@@ -92,12 +92,10 @@ export async function createRoutedPlan(
 
 Agents:
 - vision: Image analysis, describe_image tool
-- web_researcher: Web search, news, products, real-time info
-- coder: Code writing, file operations, shell commands
 - main: General tasks, default
 
 Return ONLY a JSON array of objects with "title" and "agentType" fields. Nothing else.
-Example: [{"title": "Search for the latest news", "agentType": "web_researcher"}, {"title": "Write the code", "agentType": "coder"}]
+Example: [{"title": "Analyze this image", "agentType": "vision"}]
 
 Task: ${goal}`),
         ],
@@ -132,12 +130,7 @@ Task: ${goal}`),
     };
   }
 
-  const validAgentTypes: AgentType[] = [
-    'vision',
-    'web_researcher',
-    'coder',
-    'main',
-  ];
+  const validAgentTypes: AgentType[] = ['vision', 'main'];
 
   return {
     id: `plan-${Date.now()}`,
