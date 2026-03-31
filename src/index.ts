@@ -182,7 +182,7 @@ function createMessageHandler(options: {
   confirmFn?: (preview: string) => Promise<boolean>;
   onText?: (delta: string) => void;
   mediaConfig?: MediaConfig;
-  getAbortSignal?: () => AbortSignal | undefined;
+  getAbortSignal?: (chatId?: string) => AbortSignal | undefined;
 }): MessageHandler {
   const {
     llmClient,
@@ -263,7 +263,9 @@ function createMessageHandler(options: {
           systemPrompt,
           confirmFn,
           callbacks,
-          abortSignal: getAbortSignal?.(),
+          abortSignal: getAbortSignal?.(
+            message.context.metadata.chatId as string,
+          ),
         });
         step.status = 'done';
         step.result = result.response;
@@ -304,7 +306,9 @@ function createMessageHandler(options: {
         onText,
         confirmFn,
         callbacks,
-        abortSignal: getAbortSignal?.(),
+        abortSignal: getAbortSignal?.(
+          message.context.metadata.chatId as string,
+        ),
       });
 
       responseText = result.response;
@@ -496,7 +500,8 @@ async function startFeishuAdapter(): Promise<void> {
     llmClient,
     sessionManager,
     mediaConfig,
-    getAbortSignal: undefined,
+    getAbortSignal: (chatId?: string) =>
+      chatId ? adapter.getAbortSignal(chatId) : undefined,
   });
 
   adapter.setMessageHandler(async (message, callbacks) => {

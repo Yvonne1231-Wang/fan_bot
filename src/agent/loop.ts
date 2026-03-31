@@ -357,6 +357,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
           const toolResults: ContentBlock[] = [];
 
           for (const toolUse of toolUseBlocks) {
+            checkAbort();
             log.debug(`executing tool: ${toolUse.name}`);
             callbacks?.onToolStart?.(
               toolUse.name,

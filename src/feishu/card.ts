@@ -934,6 +934,11 @@ export class StreamingCardRenderer {
 
     try {
       const cardJson = JSON.stringify(this.buildCard());
+      const byteSize = this.getByteLength(cardJson);
+      log.debug(
+        `Creating initial card, byte size: ${byteSize}, limit: ${StreamingCardRenderer.CARD_BYTE_LIMIT}`,
+      );
+
       const msgId = await this.client.createInteractiveCard(
         this.chatId,
         cardJson,
@@ -945,9 +950,11 @@ export class StreamingCardRenderer {
         this.hasPendingPatch = false;
         this.isFirstBuild = false;
       } else {
+        log.warn('createInteractiveCard returned null, entering fallback mode');
         this.isFallbackMode = true;
       }
     } catch (error) {
+      log.error('Failed to create initial card:', error);
       this.isFallbackMode = true;
     }
   }
@@ -994,7 +1001,10 @@ export class StreamingCardRenderer {
           const originalContent = this.state.contentText;
           let lo = 0,
             hi = originalContent.length;
-          while (lo < hi) {
+          let iterations = 0;
+          const maxIterations = 20;
+          while (lo < hi && iterations < maxIterations) {
+            iterations++;
             const mid = Math.ceil((lo + hi) / 2);
             this.state.contentText =
               originalContent.slice(0, mid) + '\n... (已截断)';
@@ -1008,17 +1018,28 @@ export class StreamingCardRenderer {
               hi = mid - 1;
             }
           }
+          if (iterations >= maxIterations) {
+            log.warn(
+              `Binary truncation reached max iterations, content length: ${originalContent.length}`,
+            );
+          }
           this.state.contentText =
             lo < originalContent.length
               ? originalContent.slice(0, lo) + '\n... (已截断)'
               : originalContent;
           cardJson = JSON.stringify(this.buildCard());
+          log.debug(
+            `Card truncated, final byte size: ${this.getByteLength(cardJson)}`,
+          );
         }
       }
 
       await this.client.patchInteractiveCard(this.messageId, cardJson);
       this.hasPendingPatch = false;
-    } catch (error) {}
+    } catch (error) {
+      log.error('Failed to patch card:', error);
+      this.hasPendingPatch = false;
+    }
   }
 
   /** 递归截断过长的 thinking 步骤 label */

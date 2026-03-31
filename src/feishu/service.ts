@@ -69,6 +69,7 @@ export class FeishuService {
       appSecret: config.appSecret,
       appType: lark.AppType.SelfBuild,
       domain: config.useLark ? lark.Domain.Lark : lark.Domain.Feishu,
+      loggerLevel: lark.LoggerLevel.error,
     });
     log.info('Feishu service initialized');
   }

@@ -65,6 +65,20 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
   /** 并发串行化：accountId:chatId -> Promise chain */
   private chatTaskQueues = new Map<string, Promise<void>>();
 
+  /** 每个 chatId 对应的 AbortController，用于停止正在执行的任务 */
+  private chatAbortControllers = new Map<string, AbortController>();
+
+  /** 停止指令关键词 */
+  private static readonly STOP_KEYWORDS = [
+    '/stop',
+    '停止',
+    '停下',
+    '暂停',
+    '取消',
+    'cancel',
+    'abort',
+  ];
+
   constructor(config: FeishuAdapterConfig) {
     super({ ...config, channelType: 'feishu' });
     this.feishuConfig = config;
@@ -77,6 +91,45 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
       useLark: config.useLark,
     };
     this.feishuService = new FeishuService(serviceConfig);
+  }
+
+  /**
+   * 检测消息是否是停止指令
+   */
+  private isStopCommand(text: string): boolean {
+    const normalizedText = text.trim().toLowerCase();
+    return FeishuChannelAdapter.STOP_KEYWORDS.some(
+      (keyword) =>
+        normalizedText === keyword.toLowerCase() ||
+        normalizedText.startsWith(keyword.toLowerCase() + ' ') ||
+        normalizedText.startsWith('/' + keyword.toLowerCase().replace('/', '')),
+    );
+  }
+
+  /**
+   * 停止指定 chatId 正在执行的任务
+   *
+   * @param chatId - 聊天 ID
+   * @returns 是否成功停止了任务
+   */
+  private stopChatTask(chatId: string): boolean {
+    const controller = this.chatAbortControllers.get(chatId);
+    if (controller && !controller.signal.aborted) {
+      log.info(`Stopping task for chat: ${chatId}`);
+      controller.abort();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 获取指定 chatId 的 AbortSignal
+   *
+   * @param chatId - 聊天 ID
+   * @returns AbortSignal 或 undefined
+   */
+  getAbortSignal(chatId: string): AbortSignal | undefined {
+    return this.chatAbortControllers.get(chatId)?.signal;
   }
 
   protected async doInitialize(): Promise<void> {
@@ -181,32 +234,35 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
   }
 
   async send(
-response: UnifiedResponse,
-context: MessageContext,
-): Promise<void> {
-const receiveId = context.metadata.chatId as string;
-const receiveIdType = (context.metadata.receiveIdType as 'chat_id' | 'open_id') || 'chat_id';
-const originalMessageId = context.metadata.originalMessageId as string;
-if (!receiveId) {
-log.error('No chatId in context');
-return;
-}
-const textContent = this.extractTextContent(response);
-log.info(`[cron-send] receiveId=${receiveId} receiveIdType=${receiveIdType} hasOriginalMsgId=${!!originalMessageId}`);
-if (originalMessageId) {
-await this.feishuService.replyMessage(
-originalMessageId,
-'text',
-JSON.stringify({ text: textContent }),
-);
-} else {
-await this.feishuService.sendTextMessage(
-receiveId,
-receiveIdType,
-textContent,
-);
-}
-}
+    response: UnifiedResponse,
+    context: MessageContext,
+  ): Promise<void> {
+    const receiveId = context.metadata.chatId as string;
+    const receiveIdType =
+      (context.metadata.receiveIdType as 'chat_id' | 'open_id') || 'chat_id';
+    const originalMessageId = context.metadata.originalMessageId as string;
+    if (!receiveId) {
+      log.error('No chatId in context');
+      return;
+    }
+    const textContent = this.extractTextContent(response);
+    log.info(
+      `[cron-send] receiveId=${receiveId} receiveIdType=${receiveIdType} hasOriginalMsgId=${!!originalMessageId}`,
+    );
+    if (originalMessageId) {
+      await this.feishuService.replyMessage(
+        originalMessageId,
+        'text',
+        JSON.stringify({ text: textContent }),
+      );
+    } else {
+      await this.feishuService.sendTextMessage(
+        receiveId,
+        receiveIdType,
+        textContent,
+      );
+    }
+  }
 
   async sendStream(event: StreamEvent, context: MessageContext): Promise<void> {
     if (!this.feishuConfig.enableStreamingCard) {
@@ -353,6 +409,16 @@ textContent,
             chat_id?: string;
             message_type?: string;
             content?: string;
+            mentions?: Array<{
+              id?: {
+                open_id?: string;
+                union_id?: string;
+                user_id?: string;
+              };
+              key?: string;
+              name?: string;
+              tenant_key?: string;
+            }>;
           };
           chat_type?: string;
           tenant_key?: string;
@@ -366,6 +432,16 @@ textContent,
           chat_type?: string;
           message_type?: string;
           content?: string;
+          mentions?: Array<{
+            id?: {
+              open_id?: string;
+              union_id?: string;
+              user_id?: string;
+            };
+            key?: string;
+            name?: string;
+            tenant_key?: string;
+          }>;
         };
         sender?: {
           sender_id?: { union_id?: string; user_id?: string; open_id?: string };
@@ -386,6 +462,18 @@ textContent,
         log.warn('Missing sender or message in event');
         return null;
       }
+
+      const rawMentions = message.mentions;
+      const mentions = rawMentions?.map((m) => ({
+        id: {
+          open_id: m.id?.open_id ?? '',
+          union_id: m.id?.union_id ?? '',
+          user_id: m.id?.user_id ?? '',
+        },
+        key: m.key ?? '',
+        name: m.name ?? '',
+        tenant_key: m.tenant_key,
+      }));
 
       return {
         type: 'im.message.receive_v1',
@@ -413,6 +501,7 @@ textContent,
         },
         chatType: (chatType as 'p2p' | 'group') ?? 'p2p',
         tenantKey: tenantKey ?? '',
+        mentions,
       };
     } catch (error) {
       log.error('Failed to parse message event:', error);
@@ -441,9 +530,44 @@ textContent,
     const accountId = this.feishuConfig.appId;
     const chatId = event.message.chatId;
 
+    const messageText = this.extractMessageText(event);
+    if (this.isStopCommand(messageText)) {
+      const stopped = this.stopChatTask(chatId);
+      if (stopped) {
+        log.info(`Task stopped for chat: ${chatId}`);
+        await this.feishuService.replyMessage(
+          event.messageId,
+          'text',
+          JSON.stringify({ text: '✅ 已停止当前任务' }),
+        );
+      } else {
+        await this.feishuService.replyMessage(
+          event.messageId,
+          'text',
+          JSON.stringify({ text: '当前没有正在执行的任务' }),
+        );
+      }
+      return;
+    }
+
     await this.enqueueFeishuChatTask(accountId, chatId, async () => {
       await this.doProcessMessage(event);
     });
+  }
+
+  /**
+   * 从事件中提取消息文本
+   */
+  private extractMessageText(event: FeishuMessageEvent): string {
+    try {
+      const parsed = JSON.parse(event.content);
+      if (event.msgType === 'text') {
+        return parsed.text || event.content;
+      }
+      return event.content;
+    } catch {
+      return event.content;
+    }
   }
 
   private async doProcessMessage(event: FeishuMessageEvent): Promise<void> {
@@ -452,9 +576,11 @@ textContent,
       return;
     }
 
+    const chatId = event.message.chatId;
+
     setToolContext({
       channel: 'feishu',
-      chatId: event.message.chatId,
+      chatId,
       userId: event.sender.senderId.openId,
       sessionId:
         event.chatType === 'group'
@@ -466,6 +592,8 @@ textContent,
     await this.downloadMediaIfNeeded(unifiedMessage, event.messageId);
 
     let typingReactionId: string | null = null;
+    const abortController = new AbortController();
+    this.chatAbortControllers.set(chatId, abortController);
 
     try {
       log.info('Adding typing indicator...');
@@ -474,13 +602,11 @@ textContent,
       );
       log.info('Typing reaction ID:', typingReactionId);
 
-      // 默认使用 Markdown 文本回复
-      // 只有当需要复杂交互（工具调用、思考过程）时才使用卡片
       if (this.feishuConfig.enableStreamingCard) {
         const cardClient = new FeishuCardClient(this.feishuService);
         const renderer = new StreamingCardRenderer(
           cardClient,
-          event.message.chatId,
+          chatId,
           event.messageId,
         );
 
@@ -488,7 +614,6 @@ textContent,
           renderer.setMentionUser(event.sender.senderId.openId);
         }
 
-        const abortController = new AbortController();
         renderer.setAbortCallback(() => {
           abortController.abort();
         });
@@ -541,9 +666,7 @@ textContent,
           },
         });
 
-        // 如果没有复杂内容，删除预创建的空卡片，改用 Markdown 文本
         if (!hasComplexContent) {
-          // 卡片会被保留显示，因为用户可能已经看到了
         }
       } else {
         const response = await this.messageHandler(unifiedMessage);
@@ -565,24 +688,33 @@ textContent,
         );
       }
     } catch (error) {
-      log.error('Failed to process message:', error);
-      log.error('Error details:', {
-        type: typeof error,
-        constructor: error?.constructor?.name,
-        message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        keys: error && typeof error === 'object' ? Object.keys(error) : [],
-        ...(error as object),
-      });
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
 
-      if (typingReactionId) {
-        await this.feishuService.removeTypingIndicator(
-          event.messageId,
-          typingReactionId,
-        );
+      if (abortController.signal.aborted) {
+        log.info(`Task aborted for chat: ${chatId}`);
+      } else {
+        log.error('Failed to process message:', error);
+        log.error('Error details:', {
+          type: typeof error,
+          constructor: error?.constructor?.name,
+          message: errorMessage,
+          stack: error instanceof Error ? error.stack : undefined,
+          keys: error && typeof error === 'object' ? Object.keys(error) : [],
+          ...(error as object),
+        });
+
+        if (typingReactionId) {
+          await this.feishuService.removeTypingIndicator(
+            event.messageId,
+            typingReactionId,
+          );
+        }
+
+        await this.sendError(unifiedMessage.context, errorMessage);
       }
-
-      await this.sendError(unifiedMessage.context, String(error));
+    } finally {
+      this.chatAbortControllers.delete(chatId);
     }
   }
 

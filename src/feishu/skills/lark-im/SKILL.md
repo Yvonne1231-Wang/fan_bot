@@ -50,31 +50,41 @@ When using bot identity (`--as bot`) to fetch messages (e.g. `+chat-messages-lis
 
 Card messages (`interactive` type) are not yet supported for compact conversion in event subscriptions. The raw event data will be returned instead, with a hint printed to stderr.
 
-## Shortcuts（推荐优先使用）
+## Shortcuts（⚠️ 必须使用 Shortcut）
 
-Shortcut 是对常用操作的高级封装（`lark-cli im +<verb> [flags]`）。有 Shortcut 的操作优先使用。
+**重要**：所有常用操作都有对应的 Shortcut 命令，**必须优先使用 Shortcut**，不要使用原生 API。
 
-| Shortcut | 说明 |
-|----------|------|
-| [`+chat-create`](references/lark-im-chat-create.md) | Create a group chat with bot identity; bot-only; creates private/public chats, invites users/bots, optionally sets bot manager |
-| [`+chat-messages-list`](references/lark-im-chat-messages-list.md) | List messages in a chat or P2P conversation; user/bot; accepts --chat-id or --user-id, resolves P2P chat_id, supports time range/sort/pagination |
-| [`+chat-search`](references/lark-im-chat-search.md) | Search visible group chats by keyword and/or member open_ids (e.g. look up chat_id by group name); user/bot; supports member/type filters, sorting, and pagination |
-| [`+chat-update`](references/lark-im-chat-update.md) | Update group chat name or description; user/bot; updates a chat's name or description |
-| [`+messages-mget`](references/lark-im-messages-mget.md) | Batch get messages by IDs; user/bot; fetches up to 50 om_ message IDs, formats sender names, expands thread replies |
-| [`+messages-reply`](references/lark-im-messages-reply.md) | Reply to a message (supports thread replies) with bot identity; bot-only; supports text/markdown/post/media replies, reply-in-thread, idempotency key |
-| [`+messages-resources-download`](references/lark-im-messages-resources-download.md) | Download images/files from a message; user/bot; downloads image/file resources by message-id and file-key to a safe relative output path |
-| [`+messages-search`](references/lark-im-messages-search.md) | Search messages across chats (supports keyword, sender, time range filters) with user identity; user-only; filters by chat/sender/attachment/time, enriches results via mget and chats batch_query |
-| [`+messages-send`](references/lark-im-messages-send.md) | Send a message to a chat or direct message with bot identity; bot-only; sends to chat-id or user-id with text/markdown/post/media, supports idempotency key |
-| [`+threads-messages-list`](references/lark-im-threads-messages-list.md) | List messages in a thread; user/bot; accepts om_/omt_ input, resolves message IDs to thread_id, supports sort/pagination |
+Shortcut 命令格式：`lark-cli im +<verb> [flags]`（注意 `+` 前缀）
 
-## API Resources
+| Shortcut | 说明 | 示例命令 |
+|----------|------|----------|
+| [`+chat-create`](references/lark-im-chat-create.md) | 创建群聊 | `lark-cli im +chat-create --name "群名"` |
+| [`+chat-messages-list`](references/lark-im-chat-messages-list.md) | 获取聊天记录 | `lark-cli im +chat-messages-list --chat-id oc_xxx` |
+| [`+chat-search`](references/lark-im-chat-search.md) | 搜索群聊 | `lark-cli im +chat-search --query "关键词"` |
+| [`+chat-update`](references/lark-im-chat-update.md) | 更新群信息 | `lark-cli im +chat-update --chat-id oc_xxx --name "新名称"` |
+| [`+messages-mget`](references/lark-im-messages-mget.md) | 批量获取消息 | `lark-cli im +messages-mget --ids om_xxx,om_yyy` |
+| [`+messages-reply`](references/lark-im-messages-reply.md) | 回复消息 | `lark-cli im +messages-reply --message-id om_xxx --text "回复内容"` |
+| [`+messages-resources-download`](references/lark-im-messages-resources-download.md) | 下载图片/文件 | `lark-cli im +messages-resources-download --message-id om_xxx --file-key file_xxx --type file` |
+| [`+messages-search`](references/lark-im-messages-search.md) | 搜索消息 | `lark-cli im +messages-search --query "关键词"` |
+| [`+messages-send`](references/lark-im-messages-send.md) | 发送消息 | `lark-cli im +messages-send --chat-id oc_xxx --text "消息内容"` |
+| [`+threads-messages-list`](references/lark-im-threads-messages-list.md) | 获取话题消息 | `lark-cli im +threads-messages-list --thread omt_xxx` |
+
+### 常见错误
+
+| ❌ 错误命令 | ✅ 正确命令 |
+|------------|------------|
+| `lark-cli im messages --chat-id oc_xxx` | `lark-cli im +chat-messages-list --chat-id oc_xxx` |
+| `lark-cli im chats list` | `lark-cli im +chat-search --query ""` |
+| `lark-cli im messages send --chat-id oc_xxx` | `lark-cli im +messages-send --chat-id oc_xxx --text "内容"` |
+
+## 原生 API（仅当没有对应 Shortcut 时使用）
 
 ```bash
 lark-cli schema im.<resource>.<method>   # 调用 API 前必须先查看参数结构
-lark-cli im <resource> <method> [flags] # 调用 API
+lark-cli im <resource> <method> [flags]  # 调用 API
 ```
 
-> **重要**：使用原生 API 时，必须先运行 `schema` 查看 `--data` / `--params` 参数结构，不要猜测字段格式。
+> **警告**：原生 API 格式为 `lark-cli im <resource> <method>`，没有 `+` 前缀。使用前必须先运行 `schema` 查看参数结构。
 
 ### chats
 
