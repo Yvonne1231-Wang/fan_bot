@@ -11,7 +11,6 @@ import type {
 import type { ToolRegistry } from '../tools/types.js';
 import type { MemoryService } from '../memory/types.js';
 import { createDebug } from '../utils/debug.js';
-import { extractMemories } from './memory_extractor.js';
 
 const log = createDebug('agent:loop');
 

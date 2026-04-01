@@ -21,6 +21,7 @@ interface OpenAIClientOptions {
   apiKey: string;
   baseURL?: string;
   model?: string;
+  timeout?: number;
 }
 
 function safeParseJSON(str: string): Record<string, unknown> {
@@ -289,6 +290,7 @@ export function createOpenAIClient(options: OpenAIClientOptions): LLMClient {
   const client = new OpenAI({
     apiKey: options.apiKey,
     baseURL: options.baseURL,
+    timeout: options.timeout ?? 120000, // 默认 2 分钟超时
   });
 
   const model = options.model ?? 'gpt-4o';

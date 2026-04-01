@@ -18,6 +18,99 @@ Messages sent by this tool are visible to other people. Before calling it, you *
 
 When using `--as bot`, the message is sent in the app's name, so make sure the app has already been added to the target chat.
 
+## ⚠️ CRITICAL: Correct Parameter Usage
+
+### Rule 1: Always add `--as bot`
+
+This command **only supports bot identity**. You must add `--as bot`:
+
+```bash
+# ✅ Correct
+lark-cli im +messages-send --chat-id oc_xxx --as bot --text "Hello"
+
+# ❌ Wrong - missing --as bot
+lark-cli im +messages-send --chat-id oc_xxx --text "Hello"
+```
+
+### Rule 2: Use `--text` for plain text, `--content` for JSON
+
+| Parameter | Format | When to use |
+|-----------|--------|-------------|
+| `--text` | Plain text | Simple text messages ✅ Recommended |
+| `--content` | Valid JSON | Complex formats (post, interactive, etc.) |
+
+```bash
+# ✅ Correct: --text for plain text
+lark-cli im +messages-send --chat-id oc_xxx --as bot --text "Hello"
+
+# ✅ Correct: --content with valid JSON
+lark-cli im +messages-send --chat-id oc_xxx --as bot --content '{"text":"Hello"}'
+
+# ❌ Wrong: --content without valid JSON
+lark-cli im +messages-send --chat-id oc_xxx --as bot --content "Hello"
+```
+
+### Rule 3: Use file input for long text / special characters
+
+When message content contains quotes, newlines, or special characters, **read from file**:
+
+```bash
+# ✅ Method 1: Read text file with --text
+lark-cli im +messages-send --chat-id oc_xxx --as bot --text "$(cat msg.txt)"
+
+# ✅ Method 2: Read JSON file with --content
+lark-cli im +messages-send --chat-id oc_xxx --as bot --content "$(cat msg.json)"
+
+# ✅ Method 3: Use heredoc
+lark-cli im +messages-send --chat-id oc_xxx --as bot --text "$(cat <<'EOF'
+消息内容可以包含任意引号「」"'
+也可以包含换行
+EOF
+)"
+```
+
+### 🔄 Required Workflow for AI Agent
+
+**When sending long/complex messages, you MUST follow this workflow:**
+
+#### Step 1: Write content to temp file
+Use `write_file` tool to write content to `./tmp/` directory:
+
+```
+# For plain text
+write_file: ./tmp/message.txt
+content: "Your message content here..."
+
+# For JSON (post, interactive, etc.)
+write_file: ./tmp/message.json
+content: {"zh_cn":{"title":"Title","content":[[{"tag":"text","text":"Body"}]]}}
+```
+
+#### Step 2: Execute command with file input
+```bash
+# For text file
+lark-cli im +messages-send --chat-id oc_xxx --as bot --text "$(cat ./tmp/message.txt)"
+
+# For JSON file
+lark-cli im +messages-send --chat-id oc_xxx --as bot --content "$(cat ./tmp/message.json)"
+```
+
+#### Step 3: Delete temp file after sending
+Use `delete_file` tool to clean up:
+```
+delete_file: ./tmp/message.txt
+# or
+delete_file: ./tmp/message.json
+```
+
+#### ❌ NEVER do this:
+```bash
+# WRONG: Passing long JSON directly in command line
+lark-cli im +messages-send --chat-id oc_xxx --as bot --content '{"title":"...很长的内容..."}'
+```
+
+This will cause shell parsing errors or API errors (code 2300).
+
 ## Commands
 
 ```bash

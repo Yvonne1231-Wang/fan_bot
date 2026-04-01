@@ -59,6 +59,9 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
   private readonly DEDUP_TTL_MS = 12 * 60 * 60 * 1000; // 12小时
   private readonly DEDUP_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5分钟清扫
 
+  /** Bot 的 open_id，用于判断群组消息是否 @ 了 bot */
+  private botOpenId: string | null = null;
+
   /** 消息过期时间阈值（毫秒），默认30分钟 */
   private readonly MESSAGE_EXPIRE_MS = 30 * 60 * 1000;
 
@@ -134,6 +137,14 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
 
   protected async doInitialize(): Promise<void> {
     log.info('Initializing Feishu adapter...');
+
+    const botInfo = await this.feishuService.getBotInfo();
+    if (botInfo) {
+      this.botOpenId = botInfo.openId;
+      log.info(`Bot open_id: ${this.botOpenId}`);
+    } else {
+      log.warn('Failed to get bot info, group @mention check will be skipped');
+    }
 
     this.eventDispatcher = new lark.EventDispatcher({
       verificationToken: this.feishuConfig.verificationToken,
@@ -525,6 +536,18 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
         `Skipping expired message: ${event.messageId}, age: ${Date.now() - event.message.createTime}ms`,
       );
       return;
+    }
+
+    if (event.chatType === 'group' && this.botOpenId) {
+      const isBotMentioned = event.mentions?.some(
+        (m) => m.id.open_id === this.botOpenId,
+      );
+      if (!isBotMentioned) {
+        log.debug(
+          `Skipping group message not mentioning bot: ${event.messageId}`,
+        );
+        return;
+      }
     }
 
     const accountId = this.feishuConfig.appId;

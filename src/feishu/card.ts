@@ -346,16 +346,18 @@ export class StreamingCardRenderer {
       );
     if (step) {
       step.status = resultStatus;
-    } else {
-      const anyRunning = [...this.state.steps]
-        .reverse()
-        .find((s) => s.type === 'tool' && s.status === 'running');
-      if (anyRunning) {
-        anyRunning.status = resultStatus;
-      }
+      await this.schedulePatch();
+      return;
     }
 
-    await this.schedulePatch();
+    // 降级：如果精确匹配失败，标记任意一个 running 状态的工具步骤
+    const anyRunning = [...this.state.steps]
+      .reverse()
+      .find((s) => s.type === 'tool' && s.status === 'running');
+    if (anyRunning) {
+      anyRunning.status = resultStatus;
+      await this.schedulePatch();
+    }
   }
 
   /** 回答内容增量 */
