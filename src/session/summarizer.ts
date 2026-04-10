@@ -113,7 +113,7 @@ export function estimateTokens(messages: Message[]): number {
   for (const msg of messages) {
     for (const block of msg.content) {
       if (block.type === 'text') {
-        totalTokens += Math.ceil(block.text.length / 4);
+        totalTokens += estimateTextTokens(block.text);
       } else if (block.type === 'tool_use') {
         totalTokens += Math.ceil(JSON.stringify(block.input).length / 4) + 10;
       } else if (block.type === 'tool_result') {
@@ -128,4 +128,13 @@ export function estimateTokens(messages: Message[]): number {
   }
 
   return totalTokens;
+}
+
+/**
+ * 估算文本 token：CJK 按 1 字符≈1 token，其它按 4 字符≈1 token
+ */
+export function estimateTextTokens(text: string): number {
+  const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u30ff]/g) || []).length;
+  const otherChars = text.length - cjkChars;
+  return cjkChars + Math.ceil(otherChars / 4);
 }

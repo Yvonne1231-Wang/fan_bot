@@ -3,6 +3,7 @@
 import type { Tool, ToolRegistry as IToolRegistry } from './types.js';
 import type { ToolSchema } from '../llm/types.js';
 import { createDebug } from '../utils/debug.js';
+import { AsyncLocalStorage } from 'async_hooks';
 
 const log = createDebug('tools:registry');
 
@@ -13,14 +14,25 @@ interface ToolContext {
   channel?: string;
 }
 
-let currentContext: ToolContext = {};
+const contextStorage = new AsyncLocalStorage<ToolContext>();
+let defaultContext: ToolContext = {};
 
 export function setToolContext(ctx: ToolContext): void {
-  currentContext = ctx;
+  defaultContext = ctx;
+}
+
+/**
+ * 使用异步本地存储隔离不同请求的工具上下文
+ */
+export function runWithContext<T>(
+  ctx: ToolContext,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return contextStorage.run(ctx, fn);
 }
 
 export function getToolContext(): ToolContext {
-  return currentContext;
+  return contextStorage.getStore() ?? defaultContext ?? {};
 }
 
 // ─── Registry Implementation ────────────────────────────────────────────────

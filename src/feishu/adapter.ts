@@ -20,7 +20,7 @@ import type { FeishuMessageEvent } from './types.js';
 import { FeishuCardClient } from './card-client.js';
 import { StreamingCardRenderer } from './card.js';
 import { createDebug } from '../utils/debug.js';
-import { setToolContext } from '../tools/registry.js';
+import { runWithContext } from '../tools/registry.js';
 
 const log = createDebug('feishu:adapter');
 
@@ -650,7 +650,7 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
 
     const chatId = event.message.chatId;
 
-    setToolContext({
+    const ctx = {
       channel: 'feishu',
       chatId,
       userId: event.sender.senderId.openId,
@@ -658,90 +658,106 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
         event.chatType === 'group'
           ? event.message.chatId
           : event.sender.senderId.openId,
-    });
+    };
 
-    const unifiedMessage = this.toUnifiedMessage(event);
-    await this.downloadMediaIfNeeded(unifiedMessage, event.messageId);
+    await runWithContext(ctx, async () => {
+      const handler = this.messageHandler!;
+      const unifiedMessage = this.toUnifiedMessage(event);
+      await this.downloadMediaIfNeeded(unifiedMessage, event.messageId);
 
-    let typingReactionId: string | null = null;
-    const abortController = new AbortController();
-    this.chatAbortControllers.set(chatId, abortController);
+      let typingReactionId: string | null = null;
+      const abortController = new AbortController();
+      this.chatAbortControllers.set(chatId, abortController);
 
-    try {
-      log.info('Adding typing indicator...');
-      typingReactionId = await this.feishuService.addTypingIndicator(
-        event.messageId,
-      );
-      log.info('Typing reaction ID:', typingReactionId);
-
-      if (this.feishuConfig.enableStreamingCard) {
-        const cardClient = new FeishuCardClient(this.feishuService);
-        const renderer = new StreamingCardRenderer(
-          cardClient,
-          chatId,
+      try {
+        log.info('Adding typing indicator...');
+        typingReactionId = await this.feishuService.addTypingIndicator(
           event.messageId,
         );
+        log.info('Typing reaction ID:', typingReactionId);
 
-        if (event.sender.senderId.openId) {
-          renderer.setMentionUser(event.sender.senderId.openId);
-        }
+        if (this.feishuConfig.enableStreamingCard) {
+          const cardClient = new FeishuCardClient(this.feishuService);
+          const renderer = new StreamingCardRenderer(
+            cardClient,
+            chatId,
+            event.messageId,
+          );
 
-        renderer.setAbortCallback(() => {
-          abortController.abort();
-        });
+          if (event.sender.senderId.openId) {
+            renderer.setMentionUser(event.sender.senderId.openId);
+          }
 
-        this.activeRenderers.set(event.messageId, renderer);
+          renderer.setAbortCallback(() => {
+            abortController.abort();
+          });
 
-        await renderer.init();
+          this.activeRenderers.set(event.messageId, renderer);
 
-        let hasComplexContent = false;
+          await renderer.init();
 
-        await this.messageHandler(unifiedMessage, {
-          onThinking: async (text: string) => {
-            hasComplexContent = true;
-            await renderer.onThinking(text);
-          },
-          onThinkingStop: async () => {
-            await renderer.onThinkingStop();
-          },
-          onToolStart: async (
-            toolName: string,
-            input: Record<string, unknown> | undefined,
-            parentToolUseId?: string | null,
-            toolUseId?: string,
-          ) => {
-            hasComplexContent = true;
-            await renderer.onToolStart(
-              toolName,
-              input,
-              parentToolUseId ?? null,
-              toolUseId,
+          let hasComplexContent = false;
+
+          await handler(unifiedMessage, {
+            onThinking: async (text: string) => {
+              hasComplexContent = true;
+              await renderer.onThinking(text);
+            },
+            onThinkingStop: async () => {
+              await renderer.onThinkingStop();
+            },
+            onToolStart: async (
+              toolName: string,
+              input: Record<string, unknown> | undefined,
+              parentToolUseId?: string | null,
+              toolUseId?: string,
+            ) => {
+              hasComplexContent = true;
+              await renderer.onToolStart(
+                toolName,
+                input,
+                parentToolUseId ?? null,
+                toolUseId,
+              );
+            },
+            onToolEnd: async (
+              toolName: string,
+              output: string,
+              parentToolUseId?: string | null,
+            ) => {
+              await renderer.onToolEnd(
+                toolName,
+                output,
+                parentToolUseId ?? null,
+              );
+            },
+            onContentDelta: async (delta: string) => {
+              await renderer.onContentDelta(delta);
+            },
+            onComplete: async () => {
+              await renderer.onComplete();
+              this.activeRenderers.delete(event.messageId);
+            },
+            onError: async (error: string) => {
+              await renderer.onError(error);
+              this.activeRenderers.delete(event.messageId);
+            },
+          });
+
+          if (!hasComplexContent) {
+          }
+        } else {
+          const response = await handler(unifiedMessage);
+
+          if (typingReactionId) {
+            await this.feishuService.removeTypingIndicator(
+              event.messageId,
+              typingReactionId,
             );
-          },
-          onToolEnd: async (
-            toolName: string,
-            output: string,
-            parentToolUseId?: string | null,
-          ) => {
-            await renderer.onToolEnd(toolName, output, parentToolUseId ?? null);
-          },
-          onContentDelta: async (delta: string) => {
-            await renderer.onContentDelta(delta);
-          },
-          onComplete: async () => {
-            await renderer.onComplete();
-            this.activeRenderers.delete(event.messageId);
-          },
-          onError: async (error: string) => {
-            await renderer.onError(error);
-            this.activeRenderers.delete(event.messageId);
-          },
-        });
+          }
 
-        if (!hasComplexContent) {
+          await this.send(response, unifiedMessage.context);
         }
-      } else {
-        const response = await this.messageHandler(unifiedMessage);
 
         if (typingReactionId) {
           await this.feishuService.removeTypingIndicator(
@@ -749,45 +765,36 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
             typingReactionId,
           );
         }
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
 
-        await this.send(response, unifiedMessage.context);
-      }
+        if (abortController.signal.aborted) {
+          log.info(`Task aborted for chat: ${chatId}`);
+        } else {
+          log.error('Failed to process message:', error);
+          log.error('Error details:', {
+            type: typeof error,
+            constructor: error?.constructor?.name,
+            message: errorMessage,
+            stack: error instanceof Error ? error.stack : undefined,
+            keys: error && typeof error === 'object' ? Object.keys(error) : [],
+            ...(error as object),
+          });
 
-      if (typingReactionId) {
-        await this.feishuService.removeTypingIndicator(
-          event.messageId,
-          typingReactionId,
-        );
-      }
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+          if (typingReactionId) {
+            await this.feishuService.removeTypingIndicator(
+              event.messageId,
+              typingReactionId,
+            );
+          }
 
-      if (abortController.signal.aborted) {
-        log.info(`Task aborted for chat: ${chatId}`);
-      } else {
-        log.error('Failed to process message:', error);
-        log.error('Error details:', {
-          type: typeof error,
-          constructor: error?.constructor?.name,
-          message: errorMessage,
-          stack: error instanceof Error ? error.stack : undefined,
-          keys: error && typeof error === 'object' ? Object.keys(error) : [],
-          ...(error as object),
-        });
-
-        if (typingReactionId) {
-          await this.feishuService.removeTypingIndicator(
-            event.messageId,
-            typingReactionId,
-          );
+          await this.sendError(unifiedMessage.context, errorMessage);
         }
-
-        await this.sendError(unifiedMessage.context, errorMessage);
+      } finally {
+        this.chatAbortControllers.delete(chatId);
       }
-    } finally {
-      this.chatAbortControllers.delete(chatId);
-    }
+    });
   }
 
   private toUnifiedMessage(event: FeishuMessageEvent): UnifiedMessage {

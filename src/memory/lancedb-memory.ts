@@ -46,6 +46,14 @@ const MAX_HALF_LIFE_MULTIPLIER = 3;
 
 const LENGTH_NORM_ANCHOR = 500;
 
+const MAX_MEMORY_TOKENS = 800;
+
+function estimateTokenCount(text: string): number {
+  const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u30ff]/g) || []).length;
+  const otherChars = text.length - cjkChars;
+  return cjkChars + Math.ceil(otherChars / 4);
+}
+
 function getJinaApiBaseUrl(): string {
   return process.env.JINA_API_BASE_URL || 'https://api.jina.ai/v1';
 }
@@ -534,7 +542,7 @@ export class LanceDBMemoryService implements MemoryService {
         await this.table.update({
           where: `id = '${this.escapeSQL(recordId)}'`,
           values: {
-            accessCount: count,
+            accessCount: (existing.accessCount || 0) + count,
             lastAccessedAt: lastAccess,
             memoryStrength: newStrength,
           },
@@ -1175,13 +1183,21 @@ Only output the scores, nothing else.`;
     const results = await this.searchAdvanced(query, { topK: 5 });
     if (results.length === 0) return null;
 
+    let tokenBudget = MAX_MEMORY_TOKENS;
+    const selected: SearchResult[] = [];
     for (const result of results) {
+      const cost = estimateTokenCount(result.text);
+      if (cost > tokenBudget) continue;
+      tokenBudget -= cost;
+      selected.push(result);
       this.recordAccess(result.id);
     }
 
+    if (selected.length === 0) return null;
+
     return (
       '[MEMORY]\n' +
-      results.map((r) => `- ${r.text}`).join('\n') +
+      selected.map((r) => `- ${r.text}`).join('\n') +
       '\n[/MEMORY]'
     );
   }

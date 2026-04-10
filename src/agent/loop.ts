@@ -130,10 +130,11 @@ function isConverging(messages: Message[]): boolean {
 }
 
 function isToolLoop(messages: Message[]): boolean {
+  const assistantMessages = messages.filter((m) => m.role === 'assistant');
+  const recentAssistant = assistantMessages.slice(-3);
   const recentToolCalls: Array<{ name: string; input: string }> = [];
 
-  for (const msg of messages) {
-    if (msg.role !== 'assistant') break;
+  for (const msg of recentAssistant) {
     for (const block of msg.content) {
       if (block.type === 'tool_use') {
         recentToolCalls.push({

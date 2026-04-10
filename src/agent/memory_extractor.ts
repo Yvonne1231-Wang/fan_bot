@@ -4,6 +4,8 @@ import { createDebug } from '../utils/debug.js';
 
 const log = createDebug('agent:memory_extractor');
 
+const SEMANTIC_DEDUP_THRESHOLD = 0.92;
+
 export interface MemoryExtractionResult {
   extracted: Array<{
     key: string;
@@ -88,6 +90,14 @@ Output only the JSON, nothing else.`;
     for (const item of result.extracted) {
       const existing = await memory.getFact(item.key);
       if (existing !== item.value) {
+        const semanticText = `${item.key}: ${item.value}`;
+        const similar = await memory.searchAdvanced(semanticText, { topK: 1 });
+        if (similar.length > 0 && similar[0].score > SEMANTIC_DEDUP_THRESHOLD) {
+          log.debug(
+            `Skipping similar memory (score=${similar[0].score.toFixed(3)}): ${similar[0].text}`,
+          );
+          continue;
+        }
         await memory.remember(item.key, item.value, item.scope);
         log.info(`Remembered: ${item.key} = ${item.value} (${item.scope})`);
       }
