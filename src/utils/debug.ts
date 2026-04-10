@@ -18,6 +18,9 @@
  *
  * File logging (optional):
  *   LOG_FILE=./logs/bot.log    // Also write logs to file
+ *   LOG_MAX_SIZE_MB=10         // Max log file size before rotation (default: 10MB)
+ *   LOG_MAX_AGE_DAYS=7         // Days to keep old logs (default: 7)
+ *   LOG_ROTATE_BY_DATE=true    // Rotate log file daily (default: true)
  */
 
 import {
@@ -29,7 +32,7 @@ import {
   readdirSync,
   unlinkSync,
 } from 'fs';
-import { dirname } from 'path';
+import { dirname, basename, extname } from 'path';
 import { join } from 'path';
 
 export enum LogLevel {
@@ -40,24 +43,90 @@ export enum LogLevel {
   VERBOSE = 'verbose',
 }
 
-let logFilePath: string | null = null;
+let logFileBasePath: string | null = null;
+let currentLogFile: string | null = null;
+let currentLogDate: string | null = null;
 
-function getLogFile(): string | null {
+/**
+ * 获取日志文件基础路径
+ */
+function getLogFileBase(): string | null {
   const logFile = process.env.LOG_FILE || './logs/bot.log';
   if (!logFile) return null;
 
-  if (!logFilePath) {
+  if (!logFileBasePath) {
     const dir = dirname(logFile);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    logFilePath = logFile;
+    logFileBasePath = logFile;
   }
-  return logFilePath;
+  return logFileBasePath;
 }
 
+/**
+ * 获取当前日期字符串 (YYYY-MM-DD)
+ */
+function getCurrentDateString(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * 获取带时间戳的轮转文件名
+ */
+function getRotatedFileName(basePath: string): string {
+  const now = new Date();
+  const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const dir = dirname(basePath);
+  const base = basename(basePath, extname(basePath));
+  const ext = extname(basePath) || '.log';
+  return join(dir, `${base}.${timestamp}${ext}`);
+}
+
+/**
+ * 获取按日期分割的日志文件名
+ */
+function getDatedLogFileName(basePath: string, date: string): string {
+  const dir = dirname(basePath);
+  const base = basename(basePath, extname(basePath));
+  const ext = extname(basePath) || '.log';
+  return join(dir, `${base}.${date}${ext}`);
+}
+
+/**
+ * 检查是否启用按日期分割日志
+ */
+function shouldRotateByDate(): boolean {
+  return process.env.LOG_ROTATE_BY_DATE !== 'false';
+}
+
+/**
+ * 获取当前应该使用的日志文件路径
+ * 如果启用了按日期分割，会根据日期自动切换文件
+ */
+function getCurrentLogFile(): string | null {
+  const basePath = getLogFileBase();
+  if (!basePath) return null;
+
+  if (!shouldRotateByDate()) {
+    return basePath;
+  }
+
+  const today = getCurrentDateString();
+
+  if (currentLogDate !== today || !currentLogFile) {
+    currentLogDate = today;
+    currentLogFile = getDatedLogFileName(basePath, today);
+  }
+
+  return currentLogFile;
+}
+
+/**
+ * 写入日志到文件
+ */
 function writeToFile(output: string): void {
-  const logFile = getLogFile();
+  const logFile = getCurrentLogFile();
   if (!logFile) return;
 
   try {
@@ -69,7 +138,9 @@ function writeToFile(output: string): void {
 }
 
 let lastRotationCheck = 0;
+let lastCleanupCheck = 0;
 const ROTATION_CHECK_INTERVAL = 60 * 1000;
+const CLEANUP_CHECK_INTERVAL = 60 * 60 * 1000;
 const DEFAULT_MAX_SIZE_MB = 10;
 const DEFAULT_MAX_AGE_DAYS = 7;
 
@@ -87,16 +158,13 @@ function getMaxAgeMs(): number {
     : DEFAULT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 }
 
-function shouldCompressBackup(): boolean {
-  return process.env.LOG_COMPRESS !== 'false';
-}
-
-function rotateLog(): void {
-  const logFile = getLogFile();
-  if (!logFile) return;
-
-  const rotatedFile = `${logFile}.${new Date().toISOString().slice(0, 10)}`;
+/**
+ * 轮转日志文件（按大小）
+ * 当日志文件超过最大大小时，重命名为带时间戳的文件
+ */
+function rotateLog(logFile: string): void {
   try {
+    const rotatedFile = getRotatedFileName(logFile);
     renameSync(logFile, rotatedFile);
     console.log(`[DEBUG] Log rotated to ${rotatedFile}`);
   } catch (err) {
@@ -104,20 +172,25 @@ function rotateLog(): void {
   }
 }
 
+/**
+ * 清理过期的日志文件
+ */
 function cleanupOldLogs(): void {
-  const logFile = getLogFile();
-  if (!logFile) return;
+  const basePath = getLogFileBase();
+  if (!basePath) return;
 
-  const logDir = dirname(logFile);
-  const baseName = logFile.split('/').pop() || 'bot.log';
+  const logDir = dirname(basePath);
+  const base = basename(basePath, extname(basePath));
   const maxAge = getMaxAgeMs();
   const now = Date.now();
 
   try {
-    const files = readdirSync(logDir).filter(
-      (f) => f.startsWith(baseName) && f !== baseName,
-    );
-    for (const file of files) {
+    const files = readdirSync(logDir);
+    const logFiles = files.filter((f) => {
+      return f.startsWith(base) && f !== basename(basePath);
+    });
+
+    for (const file of logFiles) {
       const filePath = join(logDir, file);
       try {
         const stat = statSync(filePath);
@@ -134,21 +207,35 @@ function cleanupOldLogs(): void {
   }
 }
 
+/**
+ * 检查是否需要轮转或清理日志
+ */
 function maybeRotateLog(): void {
   const now = Date.now();
+  const basePath = getLogFileBase();
+  if (!basePath) return;
+
+  if (shouldRotateByDate()) {
+    if (now - lastCleanupCheck >= CLEANUP_CHECK_INTERVAL) {
+      lastCleanupCheck = now;
+      cleanupOldLogs();
+    }
+    return;
+  }
+
   if (now - lastRotationCheck < ROTATION_CHECK_INTERVAL) return;
   lastRotationCheck = now;
 
-  const logFile = getLogFile();
-  if (!logFile) return;
-
   try {
-    const stat = statSync(logFile);
+    const stat = statSync(basePath);
     const maxSize = getMaxSizeBytes();
     if (stat.size > maxSize) {
-      rotateLog();
+      rotateLog(basePath);
     }
-    cleanupOldLogs();
+    if (now - lastCleanupCheck >= CLEANUP_CHECK_INTERVAL) {
+      lastCleanupCheck = now;
+      cleanupOldLogs();
+    }
   } catch {
     // file might not exist yet
   }

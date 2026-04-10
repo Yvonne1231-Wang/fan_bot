@@ -285,6 +285,10 @@ export class DefaultPermissionService implements PermissionService {
       return { allowed: true };
     }
 
+    if (config.allowedUsers.includes(userId)) {
+      return { allowed: true };
+    }
+
     if (config.blacklist.includes(groupId)) {
       return {
         allowed: false,

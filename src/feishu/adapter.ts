@@ -68,6 +68,12 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
   /** 并发串行化：accountId:chatId -> Promise chain */
   private chatTaskQueues = new Map<string, Promise<void>>();
 
+  /** 每个 chat 排队中的任务数量 */
+  private chatTaskQueueDepth = new Map<string, number>();
+
+  /** 单个 chat 最大排队任务数，超出后拒绝新消息 */
+  private readonly MAX_QUEUE_DEPTH = 3;
+
   /** 每个 chatId 对应的 AbortController，用于停止正在执行的任务 */
   private chatAbortControllers = new Map<string, AbortController>();
 
@@ -160,6 +166,12 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
         log.debug('Received card action event');
         this.handleCardAction(data);
       },
+      'im.message.reaction.created_v1': (_data: unknown) => {
+        log.debug('Received message reaction event (ignored)');
+      },
+      'im.message.reaction.deleted_v1': (_data: unknown) => {
+        log.debug('Received message reaction delete event (ignored)');
+      },
     });
 
     this.wsClient = new lark.WSClient({
@@ -218,12 +230,30 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
     return false;
   }
 
+  /**
+   * 将任务加入指定 chat 的串行队列
+   *
+   * 队列深度超过 MAX_QUEUE_DEPTH 时拒绝新任务，
+   * 防止消息堆积导致内存无限增长。
+   *
+   * @returns 如果队列已满返回 false，否则返回 true
+   */
   private async enqueueFeishuChatTask(
     accountId: string,
     chatId: string,
     task: () => Promise<void>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const key = `${accountId}:${chatId}`;
+    const currentDepth = this.chatTaskQueueDepth.get(key) ?? 0;
+
+    if (currentDepth >= this.MAX_QUEUE_DEPTH) {
+      log.warn(
+        `Queue depth limit reached for ${key} (${currentDepth}/${this.MAX_QUEUE_DEPTH}), rejecting new task`,
+      );
+      return false;
+    }
+
+    this.chatTaskQueueDepth.set(key, currentDepth + 1);
     const existingQueue = this.chatTaskQueues.get(key);
 
     const newQueue = (async () => {
@@ -238,10 +268,17 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
     try {
       await newQueue;
     } finally {
+      const depth = this.chatTaskQueueDepth.get(key) ?? 1;
+      if (depth <= 1) {
+        this.chatTaskQueueDepth.delete(key);
+      } else {
+        this.chatTaskQueueDepth.set(key, depth - 1);
+      }
       if (this.chatTaskQueues.get(key) === newQueue) {
         this.chatTaskQueues.delete(key);
       }
     }
+    return true;
   }
 
   async send(
@@ -573,9 +610,21 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
       return;
     }
 
-    await this.enqueueFeishuChatTask(accountId, chatId, async () => {
-      await this.doProcessMessage(event);
-    });
+    const enqueued = await this.enqueueFeishuChatTask(
+      accountId,
+      chatId,
+      async () => {
+        await this.doProcessMessage(event);
+      },
+    );
+
+    if (!enqueued) {
+      await this.feishuService.replyMessage(
+        event.messageId,
+        'text',
+        JSON.stringify({ text: '🙏 我正在处理之前的消息，请稍候再发送' }),
+      );
+    }
   }
 
   /**

@@ -81,6 +81,7 @@ export function createLLMClient(options: CreateLLMClientOptions): LLMClient {
       return createAnthropicClient({
         apiKey: options.apiKey,
         model: options.model,
+        baseURL: options.baseURL,
       });
 
     case Provider.Ark:
@@ -134,6 +135,7 @@ export function createLLMClientFromEnv(providerOverride?: string): LLMClient {
     provider: Provider.Anthropic,
     apiKey,
     model: process.env.ANTHROPIC_MODEL,
+    baseURL: process.env.ANTHROPIC_BASE_URL,
   });
 }
 

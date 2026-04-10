@@ -32,6 +32,9 @@ const execFileAsync = promisify(execFile);
 
 const log = createDebug('cron:executor');
 
+const DEFAULT_CRON_MAX_ITERATIONS = 20;
+const DEFAULT_CRON_TIMEOUT_MS = 300_000;
+
 export interface CronResultSender {
   (result: string, context: MessageContext): Promise<void>;
 }
@@ -143,13 +146,19 @@ export class CronExecutor {
       skills: [],
     });
 
+    const maxIterations =
+      Number(process.env.CRON_MAX_AGENT_ITERATIONS) ||
+      DEFAULT_CRON_MAX_ITERATIONS;
+    const timeoutMs =
+      Number(process.env.CRON_AGENT_TIMEOUT_MS) || DEFAULT_CRON_TIMEOUT_MS;
+
     const result = await runAgent({
       prompt: payload.prompt,
       llmClient,
       toolRegistry,
-      maxIterations: 50,
+      maxIterations,
       systemPrompt,
-      abortSignal: AbortSignal.timeout(300000),
+      abortSignal: AbortSignal.timeout(timeoutMs),
     });
 
     return result.response;

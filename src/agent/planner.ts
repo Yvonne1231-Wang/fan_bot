@@ -68,15 +68,30 @@ Task: ${goal}`),
   };
 }
 
+/**
+ * 判断用户消息是否需要启动多步计划
+ *
+ * 为避免误触发（如"先搜索一下然后告诉我"这类简单请求），
+ * 要求消息足够长且包含明确的多步骤关键词组合。
+ */
 export function shouldPlan(message: string): boolean {
   if (message.startsWith('/plan ')) return true;
-  const planPatterns = [
-    /先.{0,10}[，,].{0,20}(然后|接着|再)/,
-    /分(步|阶段|批)/,
-    /step\s*\d/i,
-    /^\s*(帮我|请你|麻烦).{0,30}(然后|再|接着|最后)/,
-  ];
-  return planPatterns.some((p) => p.test(message));
+
+  const MIN_PLAN_LENGTH = 30;
+  if (message.length < MIN_PLAN_LENGTH) return false;
+
+  const multiStepKeywords =
+    /(?:第一|第二|第三|步骤\s*[1-9]|step\s*[1-9]|1[.、)]\s*\S)/i;
+  if (multiStepKeywords.test(message)) return true;
+
+  const sequentialPattern =
+    /先.{5,}[，,。；;].{0,20}(然后|接着|之后|再).{5,}(然后|接着|再|最后|并且)/;
+  if (sequentialPattern.test(message)) return true;
+
+  const explicitPlanKeywords = /分(步|阶段|批)(骤|进行|完成|实现|处理|执行)/;
+  if (explicitPlanKeywords.test(message)) return true;
+
+  return false;
 }
 
 export async function createRoutedPlan(

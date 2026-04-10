@@ -17,6 +17,7 @@ const LLM_TIMEOUT_MS = 120000;
 interface AnthropicClientOptions {
   apiKey: string;
   model?: string;
+  baseURL?: string;
 }
 
 // ─── Content Block Converters ───────────────────────────────────────────────
@@ -115,6 +116,7 @@ export function createAnthropicClient(
 ): LLMClient {
   const client = new Anthropic({
     apiKey: options.apiKey,
+    baseURL: options.baseURL,
   });
 
   const model = options.model ?? 'claude-sonnet-4-6';

@@ -26,6 +26,7 @@ type InternalRecord = Record<string, unknown> & {
   supersededBy: string;
   accessCount: number;
   lastAccessedAt: number;
+  memoryStrength: number;
 };
 
 const EMBEDDING_DIMENSION = 768;
@@ -135,6 +136,7 @@ export class LanceDBMemoryService implements MemoryService {
           supersededBy: '',
           accessCount: 0,
           lastAccessedAt: now,
+          memoryStrength: 1.0,
         },
       ];
       this.table = await this.db.createTable(TABLE_NAME, seedData, {
@@ -467,12 +469,16 @@ export class LanceDBMemoryService implements MemoryService {
       RECENCY_HALF_LIFE_DAYS * MAX_HALF_LIFE_MULTIPLIER,
     );
 
-    const ageMs = now - record.createdAt;
-    const halfLifeMs = effectiveHalfLife * 24 * 60 * 60 * 1000;
-    const ageInHalfLives = ageMs / halfLifeMs;
+    const daysSinceLastAccessForDecay =
+      (now - (record.lastAccessedAt || record.createdAt)) /
+      (24 * 60 * 60 * 1000);
+    const ageInHalfLives = daysSinceLastAccessForDecay / effectiveHalfLife;
     const decayFactor = Math.pow(0.5, ageInHalfLives);
 
-    return 1 + RECENCY_WEIGHT * decayFactor;
+    const baseStrength = record.memoryStrength ?? 1.0;
+    const effectiveStrength = baseStrength * decayFactor;
+
+    return 1 + RECENCY_WEIGHT * effectiveStrength;
   }
 
   private recordAccess(recordId: string): void {
@@ -511,13 +517,32 @@ export class LanceDBMemoryService implements MemoryService {
 
     for (const [recordId, { count, lastAccess }] of entries) {
       try {
+        const existingRecords = (await this.table
+          .query()
+          .where(`id = '${this.escapeSQL(recordId)}'`)
+          .limit(1)
+          .toArray()) as InternalRecord[];
+
+        if (existingRecords.length === 0) continue;
+
+        const existing = existingRecords[0];
+        const currentStrength = existing.memoryStrength ?? 1.0;
+
+        const recoveryBoost = 0.3 * (1 - currentStrength);
+        const newStrength = Math.min(1.0, currentStrength + recoveryBoost);
+
         await this.table.update({
           where: `id = '${this.escapeSQL(recordId)}'`,
           values: {
             accessCount: count,
             lastAccessedAt: lastAccess,
+            memoryStrength: newStrength,
           },
         });
+
+        log.debug(
+          `Memory strength recovered: ${recordId} ${currentStrength.toFixed(2)} → ${newStrength.toFixed(2)}`,
+        );
       } catch (err) {
         log.warn(`Failed to update access count for ${recordId}: ${err}`);
         const existing = this.accessTracker.get(recordId);
@@ -799,6 +824,7 @@ Only output the scores, nothing else.`;
         supersededBy: '',
         accessCount: 0,
         lastAccessedAt: now,
+        memoryStrength: 1.0,
       };
       await this.table.add([newRecord]);
       return newRecord as MemoryRecord;
@@ -820,6 +846,7 @@ Only output the scores, nothing else.`;
       supersededBy: '',
       accessCount: 0,
       lastAccessedAt: now,
+      memoryStrength: 1.0,
     };
     await this.table.add([record]);
     return record as MemoryRecord;

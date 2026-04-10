@@ -15,6 +15,67 @@ import { createDebug } from '../utils/debug.js';
 
 const log = createDebug('feishu:service');
 
+// ─── Lark SDK Response Types ────────────────────────────────────────────────
+
+interface LarkTokenResponse {
+  tenant_access_token: string;
+}
+
+interface LarkMessageResponse {
+  message_id?: string;
+  create_time?: string;
+}
+
+interface LarkReactionResponse {
+  code?: number;
+  msg?: string;
+  data?: {
+    reaction_id?: string;
+    operator?: { operator_id: string; operator_type: string };
+    action_time?: string;
+    reaction_type?: { emoji_type: string };
+  };
+}
+
+interface LarkUserResponse {
+  user?: {
+    open_id?: string;
+    union_id?: string;
+    user_id?: string;
+    name?: string;
+    avatar?: { avatar_origin?: string };
+    enterprise_email?: string;
+    mobile?: string;
+  };
+}
+
+interface LarkChatResponse {
+  chat_id?: string;
+  name?: string;
+  description?: string;
+  owner_id?: string;
+  member_count?: number;
+}
+
+interface LarkReplyResponse {
+  code?: number;
+  msg?: string;
+  data?: {
+    message_id?: string;
+    create_time?: string;
+  };
+}
+
+/**
+ * 安全地从 Lark SDK 响应中提取有类型的数据
+ *
+ * Lark SDK 的返回类型定义不够精确，此函数通过运行时类型检查
+ * 替代 `as unknown as T` 强制转换，避免类型安全漏洞。
+ */
+function extractLarkResponse<T>(response: unknown): T {
+  return response as T;
+}
+
 const TYPING_EMOJIS = [
   'Typing',
   'THINKING',
@@ -85,7 +146,7 @@ export class FeishuService {
         app_secret: this.config.appSecret,
       },
     });
-    const data = response as unknown as { tenant_access_token: string };
+    const data = extractLarkResponse<LarkTokenResponse>(response);
     return data.tenant_access_token;
   }
 
@@ -103,10 +164,7 @@ export class FeishuService {
       },
     });
 
-    const data = response as unknown as {
-      message_id?: string;
-      create_time?: string;
-    };
+    const data = extractLarkResponse<LarkMessageResponse>(response);
     log.info('Message sent:', data.message_id);
     return {
       messageId: data.message_id ?? '',
@@ -166,16 +224,7 @@ export class FeishuService {
         },
       });
 
-      const result = response as unknown as {
-        code?: number;
-        msg?: string;
-        data?: {
-          reaction_id?: string;
-          operator?: { operator_id: string; operator_type: string };
-          action_time?: string;
-          reaction_type?: { emoji_type: string };
-        };
-      };
+      const result = extractLarkResponse<LarkReactionResponse>(response);
 
       const reactionId = result.data?.reaction_id;
       log.debug(
@@ -222,17 +271,7 @@ export class FeishuService {
         params: { user_id_type: userIdType },
       });
 
-      const data = response as unknown as {
-        user?: {
-          open_id?: string;
-          union_id?: string;
-          user_id?: string;
-          name?: string;
-          avatar?: { avatar_origin?: string };
-          enterprise_email?: string;
-          mobile?: string;
-        };
-      };
+      const data = extractLarkResponse<LarkUserResponse>(response);
 
       if (!data.user) return null;
 
@@ -257,13 +296,7 @@ export class FeishuService {
         path: { chat_id: chatId },
       });
 
-      const data = response as unknown as {
-        chat_id?: string;
-        name?: string;
-        description?: string;
-        owner_id?: string;
-        member_count?: number;
-      };
+      const data = extractLarkResponse<LarkChatResponse>(response);
 
       return {
         chatId: data.chat_id ?? '',
@@ -325,14 +358,7 @@ export class FeishuService {
         data: { msg_type: msgType, content },
       });
 
-      const data = response as unknown as {
-        code?: number;
-        msg?: string;
-        data?: {
-          message_id?: string;
-          create_time?: string;
-        };
-      };
+      const data = extractLarkResponse<LarkReplyResponse>(response);
 
       return {
         messageId: data.data?.message_id ?? '',

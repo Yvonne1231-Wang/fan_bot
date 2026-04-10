@@ -800,7 +800,7 @@ export class StreamingCardRenderer {
 
     if (step.type === 'thinking') {
       const label =
-        step.label.length > 80 ? step.label.slice(0, 77) + '...' : step.label;
+        step.label.length > 100 ? step.label.slice(0, 97) + '...' : step.label;
       text = `${icon}  ${label}`;
     } else {
       const prefix =
@@ -814,8 +814,8 @@ export class StreamingCardRenderer {
       text = `${icon}  ${prefix}: ${label}`;
       if (step.actionSummary) {
         const summary =
-          step.actionSummary.length > 35
-            ? step.actionSummary.slice(0, 32) + '...'
+          step.actionSummary.length > 60
+            ? step.actionSummary.slice(0, 57) + '...'
             : step.actionSummary;
         text += `\n　　${summary}`;
       }
@@ -1090,7 +1090,7 @@ export class StreamingCardRenderer {
           input.description ||
           '';
         if (action && typeof action === 'string') {
-          return action.length > 40 ? action.slice(0, 37) + '...' : action;
+          return action.length > 60 ? action.slice(0, 57) + '...' : action;
         }
       }
       return '';
@@ -1106,7 +1106,7 @@ export class StreamingCardRenderer {
         input.url ||
         input.path;
       if (query && typeof query === 'string') {
-        const display = query.length > 40 ? query.slice(0, 37) + '...' : query;
+        const display = query.length > 60 ? query.slice(0, 57) + '...' : query;
         return display;
       }
     }
