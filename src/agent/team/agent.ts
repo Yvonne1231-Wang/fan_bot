@@ -211,6 +211,7 @@ export class AgentTeam {
       });
 
       return {
+        taskId: task.id,
         agentType: executor.type,
         success: true,
         output: agentResult.response,
@@ -222,6 +223,7 @@ export class AgentTeam {
         error instanceof Error ? error.message : String(error);
 
       return {
+        taskId: task.id,
         agentType: task.assignee?.type ?? 'unknown',
         success: false,
         output: '',
@@ -337,9 +339,10 @@ ${results}
     await waitForRunning();
 
     while (results.length < tasks.length) {
-      const remaining = tasks.filter(
-        (t) => !results.some((r) => t.assignee?.type === r.agentType),
+      const completedTaskIds = new Set(
+        results.map((r) => r.taskId).filter((id): id is string => !!id),
       );
+      const remaining = tasks.filter((t) => !completedTaskIds.has(t.id));
       if (remaining.length === 0) break;
       const result = await this.executeTask(remaining[0]);
       results.push(result);

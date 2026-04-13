@@ -99,9 +99,18 @@ export class CronExecutor {
       if (context && this.options.resultSender) {
         try {
           await this.options.resultSender(result, context);
-          log.debug(`Cron result sent to channel`);
+          log.info(`Cron result sent to channel`);
         } catch (sendError) {
-          log.warn(`Failed to send cron result: ${sendError}`);
+          const sendErrorMsg =
+            sendError instanceof Error ? sendError.message : String(sendError);
+          log.error(`Failed to send cron result: ${sendErrorMsg}`);
+          return {
+            taskId: task.id,
+            success: false,
+            error: `Result generated but delivery failed: ${sendErrorMsg}`,
+            result,
+            executedAt,
+          };
         }
       }
 
@@ -152,12 +161,14 @@ export class CronExecutor {
     const timeoutMs =
       Number(process.env.CRON_AGENT_TIMEOUT_MS) || DEFAULT_CRON_TIMEOUT_MS;
 
+    const cronGuidance = `\n\n[Cron 执行模式] 你是定时任务驱动的自主 Agent，没有用户在等待回复。你必须主动调用工具完成任务，不要只输出意图描述。如果需要搜索信息，请立即调用搜索工具；如果需要读取飞书消息，请立即调用相关工具。不要在第一次回复就结束——持续调用工具直到获取到完整结果。`;
+
     const result = await runAgent({
       prompt: payload.prompt,
       llmClient,
       toolRegistry,
       maxIterations,
-      systemPrompt,
+      systemPrompt: systemPrompt + cronGuidance,
       abortSignal: AbortSignal.timeout(timeoutMs),
     });
 

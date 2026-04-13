@@ -7,20 +7,17 @@ import { createSubAgentTools } from '../agent/index.js';
 import { getMemory, LanceDBMemoryService } from '../memory/index.js';
 import { registry, registerTool } from '../tools/registry.js';
 import { calculatorTool } from '../tools/calculator.js';
-import {
-  readFileTool,
-  writeFileTool,
-  listDirTool,
-} from '../tools/files.js';
+import { readFileTool, writeFileTool, listDirTool } from '../tools/files.js';
 import { shellTool } from '../tools/shell.js';
 import { webSearchTool } from '../tools/web_search.js';
 import { webFetchTool } from '../tools/web_fetch.js';
 import { skillTool } from '../tools/skill.js';
 import {
-  CronStore,
-  CronScheduler,
-  CronExecutor,
-} from '../cron/index.js';
+  memoryListTool,
+  memoryDeleteTool,
+  memorySearchTool,
+} from '../tools/memory.js';
+import { CronStore, CronScheduler, CronExecutor } from '../cron/index.js';
 import {
   cronCreateTool,
   cronListTool,
@@ -104,6 +101,9 @@ export function registerDefaultTools(llmClient: LLMClient): void {
   registerTool(readFileTool);
   registerTool(writeFileTool);
   registerTool(listDirTool);
+  registerTool(memoryListTool);
+  registerTool(memoryDeleteTool);
+  registerTool(memorySearchTool);
 
   const subAgentCtx = {
     llmClient,

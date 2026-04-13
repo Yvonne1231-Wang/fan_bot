@@ -205,6 +205,9 @@ export type InstanceStatus = 'idle' | 'busy' | 'error';
  * Agent 执行结果
  */
 export interface AgentExecutionResult {
+  /** 关联的任务 ID */
+  taskId?: string;
+
   /** Agent 类型 */
   agentType: string;
 
