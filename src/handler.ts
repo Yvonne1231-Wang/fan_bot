@@ -116,14 +116,21 @@ export function createMessageHandler(
 
     const [messages, mediaResult] = await Promise.all([
       sessionManager.load(sessionId),
-      runMediaUnderstanding(unifiedToMsgContext(message), mediaConfig!),
+      mediaConfig ? runMediaUnderstanding(unifiedToMsgContext(message), mediaConfig) : Promise.resolve(undefined),
     ]);
+
+    const channelInfo = [
+      `Channel: ${message.context.channel}`,
+      message.context.groupId ? `Chat type: group (id: ${message.context.groupId})` : 'Chat type: direct message',
+      `User ID: ${userId}`,
+    ].join('\n');
 
     const systemPrompt = await buildSystemPrompt({
       agentName: 'fan_bot',
       memory,
       userQuery,
       skills: getSkillEntries(),
+      extraContext: channelInfo,
     });
 
     let responseText = '';

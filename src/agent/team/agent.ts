@@ -190,6 +190,7 @@ export class AgentTeam {
         toolRegistry,
         systemPrompt: executor.systemPrompt,
         maxIterations: 20,
+        abortSignal: this.config.abortSignal,
         callbacks: {
           onContentDelta: (delta) => {
             console.log(`      [${timestamp()}] 📝 ${delta.slice(0, 50)}...`);

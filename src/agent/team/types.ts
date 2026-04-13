@@ -108,6 +108,9 @@ export interface TeamConfig {
 
   /** 默认模型 */
   defaultModel?: string;
+
+  /** 中止信号（传递给 runAgent） */
+  abortSignal?: AbortSignal;
 }
 
 /**

@@ -136,7 +136,33 @@ export class SessionManagerImpl implements SessionManager {
       keptFromEnd = [...additionalMessages, ...keptFromEnd];
     }
 
-    return [firstMessage, ...keptFromEnd];
+    // 最终校验：移除没有对应 tool_use 的 orphaned tool_result，
+    // 避免 Anthropic API 报错
+    const result = [firstMessage, ...keptFromEnd];
+    const allToolUseIds = new Set<string>();
+    for (const msg of result) {
+      for (const block of msg.content) {
+        if (block.type === 'tool_use') {
+          allToolUseIds.add(block.id);
+        }
+      }
+    }
+
+    for (const msg of result) {
+      msg.content = msg.content.filter((block) => {
+        if (block.type === 'tool_result') {
+          const hasParent = allToolUseIds.has(block.tool_use_id);
+          if (!hasParent) {
+            log.warn(`Removing orphaned tool_result (tool_use_id: ${block.tool_use_id})`);
+          }
+          return hasParent;
+        }
+        return true;
+      });
+    }
+
+    // 移除变为空内容的消息
+    return result.filter((msg) => msg.content.length > 0);
   }
 
   /**

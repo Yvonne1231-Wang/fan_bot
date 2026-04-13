@@ -22,6 +22,7 @@ import type {
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createDebug } from '../utils/debug.js';
+import { runWithContext } from '../tools/registry.js';
 import {
   validateShellCommand,
   isPathAllowed,
@@ -76,6 +77,7 @@ export class CronExecutor {
           result = await this.executeAgent(
             task.payload as AgentTaskPayload,
             task.id,
+            task.createdBy,
           );
           break;
         case 'notification':
@@ -142,9 +144,19 @@ export class CronExecutor {
   private async executeAgent(
     payload: AgentTaskPayload,
     sessionId: string,
+    userId?: string,
   ): Promise<string> {
     const { llmClient, toolRegistry, memory } = this.options;
 
+    // 注入用户 context，确保 memory 和工具能正确识别任务创建者
+    const ctx = {
+      channel: 'cron',
+      userId: userId || 'cron-system',
+      sessionId,
+      chatId: sessionId,
+    };
+
+    return runWithContext(ctx, async () => {
     const { runAgent } = await import('../agent/loop.js');
     const { buildSystemPrompt } = await import('../agent/prompt.js');
 
@@ -173,6 +185,7 @@ export class CronExecutor {
     });
 
     return result.response;
+    }); // runWithContext
   }
 
   /**
