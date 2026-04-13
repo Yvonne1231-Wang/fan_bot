@@ -6,22 +6,22 @@ import { createDebug } from '../utils/debug.js';
 
 const log = createDebug('tools:skill');
 
+const MAX_SKILL_CONTENT_CHARS = 8000;
+
 export const skillTool: Tool = {
   schema: {
     name: 'Skill',
-    description: `Declare intent to use a specific skill. Call this tool BEFORE using skill-related tools to indicate which skill you are applying.
-
-This helps track skill usage and provides context for the user.
+    description: `Activate a skill and receive its full SKILL.md guide (commands, parameters, examples). You MUST call this tool BEFORE using any lark-cli commands or skill-specific tools — do NOT guess command names.
 
 Example:
-- Before using feishu document tools, call Skill(skill_name="feishu-create-doc")
-- Before using feishu bitable tools, call Skill(skill_name="feishu-bitable")`,
+- Before using feishu IM tools, call Skill(skill_name="lark-im")
+- Before extracting menus, call Skill(skill_name="group-menu-extractor")`,
     input_schema: {
       type: 'object',
       properties: {
         skill_name: {
           type: 'string',
-          description: 'The name of the skill to use (e.g., "feishu-create-doc", "feishu-bitable")',
+          description: 'The name of the skill to use (e.g., "lark-im", "group-menu-extractor")',
         },
         action: {
           type: 'string',
@@ -54,11 +54,10 @@ Example:
       return `Error: Skill "${skillName}" not found. Available skills: ${availableSkills}`;
     }
 
-    log.info(`Skill declared: ${skillName}${action ? ` (${action})` : ''}`);
+    log.info(`Skill activated: ${skillName}${action ? ` (${action})` : ''}`);
 
     const parts: string[] = [
       `✓ Skill activated: ${skillName}`,
-      `Description: ${skill.metadata.description}`,
     ];
 
     if (action) {
@@ -69,8 +68,12 @@ Example:
       parts.push(`Context: ${context}`);
     }
 
-    parts.push(`\nSkill location: ${skill.baseDir}`);
-    parts.push('\nYou can now proceed with using the relevant tools for this skill.');
+    let skillContent = skill.content;
+    if (skillContent.length > MAX_SKILL_CONTENT_CHARS) {
+      skillContent = skillContent.slice(0, MAX_SKILL_CONTENT_CHARS) + '\n\n[... truncated, full content at: ' + skill.baseDir + '/SKILL.md]';
+    }
+
+    parts.push(`\n--- SKILL.md ---\n${skillContent}`);
 
     return parts.join('\n');
   },

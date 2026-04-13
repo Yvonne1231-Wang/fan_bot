@@ -1,8 +1,12 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { Tool } from './types.js';
+import { createDebug } from '../utils/debug.js';
 
 const execAsync = promisify(exec);
+const log = createDebug('tools:shell');
+
+const MAX_SHELL_OUTPUT_CHARS = 20000;
 
 export const shellTool: Tool = {
   schema: {
@@ -25,9 +29,17 @@ export const shellTool: Tool = {
     try {
       const { stdout, stderr } = await execAsync(String(command), {
         timeout: Number(timeout),
-        maxBuffer: 1024 * 1024 * 5,
+        maxBuffer: 1024 * 1024,
       });
-      const output = [stdout, stderr].filter(Boolean).join('\n');
+      let output = [stdout, stderr].filter(Boolean).join('\n');
+      if (output.length > MAX_SHELL_OUTPUT_CHARS) {
+        log.warn(
+          `Shell output truncated: ${output.length} -> ${MAX_SHELL_OUTPUT_CHARS} chars`,
+        );
+        output =
+          output.slice(0, MAX_SHELL_OUTPUT_CHARS) +
+          '\n\n[... output truncated due to size limit ...]';
+      }
       return output || '(no output)';
     } catch (error: any) {
       return `Exit ${error.code ?? 1}: ${error.stderr || error.message}`;

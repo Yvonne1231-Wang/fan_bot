@@ -11,6 +11,7 @@ import type {
 import { log } from '../utils/debug.js';
 
 const LLM_TIMEOUT_MS = 120000;
+const MAX_CONTENT_BLOCKS_PER_MESSAGE = 100;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -121,6 +122,73 @@ export function createAnthropicClient(
 
   const model = options.model ?? 'claude-sonnet-4-6';
 
+  /**
+   * 将内部消息转换为 Anthropic 格式，自动拆分 content blocks 超限的消息。
+   * Anthropic API 对单条消息的 content blocks 数量有限制。
+   */
+  function toAnthropicMessages(messages: Message[]): Anthropic.MessageParam[] {
+    const result: Anthropic.MessageParam[] = [];
+
+    for (const msg of messages) {
+      if (msg.content.length <= MAX_CONTENT_BLOCKS_PER_MESSAGE) {
+        result.push({
+          role: msg.role,
+          content: msg.content.map(toAnthropicContent),
+        });
+        continue;
+      }
+
+      log.llm.anthropic.warn(
+        `Anthropic: splitting message with ${msg.content.length} content blocks (limit: ${MAX_CONTENT_BLOCKS_PER_MESSAGE})`,
+      );
+
+      // 拆分策略：按 tool_result 和非 tool_result 分组
+      const nonToolResults = msg.content.filter(
+        (b) => b.type !== 'tool_result',
+      );
+      const toolResults = msg.content.filter(
+        (b): b is Extract<ContentBlock, { type: 'tool_result' }> =>
+          b.type === 'tool_result',
+      );
+
+      // 第一条消息：非 tool_result + 前 N 个 tool_result
+      const firstChunkSize = Math.min(
+        MAX_CONTENT_BLOCKS_PER_MESSAGE - nonToolResults.length,
+        toolResults.length,
+      );
+
+      if (firstChunkSize > 0) {
+        result.push({
+          role: msg.role,
+          content: [
+            ...nonToolResults.map(toAnthropicContent),
+            ...toolResults.slice(0, firstChunkSize).map(toAnthropicContent),
+          ],
+        });
+      } else if (nonToolResults.length > 0) {
+        result.push({
+          role: msg.role,
+          content: nonToolResults
+            .slice(0, MAX_CONTENT_BLOCKS_PER_MESSAGE)
+            .map(toAnthropicContent),
+        });
+      }
+
+      // 剩余 tool_result 拆分为额外的 user 消息
+      let remaining = toolResults.slice(firstChunkSize);
+      while (remaining.length > 0) {
+        const chunk = remaining.slice(0, MAX_CONTENT_BLOCKS_PER_MESSAGE);
+        remaining = remaining.slice(MAX_CONTENT_BLOCKS_PER_MESSAGE);
+        result.push({
+          role: 'user',
+          content: chunk.map(toAnthropicContent),
+        });
+      }
+    }
+
+    return result;
+  }
+
   return {
     chat: async (
       messages: Message[],
@@ -128,12 +196,7 @@ export function createAnthropicClient(
       systemPrompt?: string,
       signal?: AbortSignal,
     ): Promise<LLMResponse> => {
-      const anthropicMessages: Anthropic.MessageParam[] = messages.map(
-        (msg: Message) => ({
-          role: msg.role,
-          content: msg.content.map(toAnthropicContent),
-        }),
-      );
+      const anthropicMessages = toAnthropicMessages(messages);
 
       log.llm.anthropic.verbose('Sending request', {
         model,
@@ -198,12 +261,7 @@ export function createAnthropicClient(
       onThinking?: (thinking: string) => void,
       signal?: AbortSignal,
     ): Promise<LLMResponse> => {
-      const anthropicMessages: Anthropic.MessageParam[] = messages.map(
-        (msg: Message) => ({
-          role: msg.role,
-          content: msg.content.map(toAnthropicContent),
-        }),
-      );
+      const anthropicMessages = toAnthropicMessages(messages);
 
       const anthropicTools: Anthropic.Tool[] = tools.map(
         (tool: ToolSchema) => ({
@@ -218,6 +276,7 @@ export function createAnthropicClient(
         ? AbortSignal.any([signal, timeoutSignal])
         : timeoutSignal;
 
+      const supportsThinking = model.startsWith('claude-');
       const response = await client.messages.create(
         {
           model,
@@ -228,12 +287,13 @@ export function createAnthropicClient(
             anthropicTools.length > 0
               ? (anthropicTools as Anthropic.Tool[])
               : undefined,
-          thinking: onThinking
-            ? {
-                type: 'enabled',
-                budget_tokens: 10000,
-              }
-            : undefined,
+          thinking:
+            onThinking && supportsThinking
+              ? {
+                  type: 'enabled',
+                  budget_tokens: 10000,
+                }
+              : undefined,
           stream: true,
         },
         { signal: combinedSignal },
@@ -264,7 +324,7 @@ export function createAnthropicClient(
         } else if (event.type === 'content_block_delta') {
           if (event.delta.type === 'thinking_delta') {
             thinkingBuffer += event.delta.thinking;
-            onThinking?.(thinkingBuffer);
+            onThinking?.(event.delta.thinking);
           } else if (event.delta.type === 'text_delta') {
             if (thinkingBuffer) {
               thinkingBuffer = '';

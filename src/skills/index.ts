@@ -8,6 +8,7 @@ export {
   formatSkillsForPrompt,
   getSkillContent,
   xmlEscape,
+  loadSkillTools,
 } from './loader.js';
 
 export type {

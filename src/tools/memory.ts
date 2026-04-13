@@ -56,7 +56,7 @@ export const memoryDeleteTool: Tool = {
   schema: {
     name: 'memory_delete',
     description:
-      '删除指定 key 的记忆。当用户明确要求删除、遗忘或移除某条记忆时使用此工具。副作用：记忆将被永久删除且无法恢复。',
+      '⚠️ 危险操作：永久删除指定 key 的记忆，无法恢复。仅在用户明确、直接地要求删除某条记忆时使用（如"帮我删掉xxx的记忆"、"忘记xxx"）。绝对不要在用户没有明确要求的情况下自行决定删除记忆。副作用：记忆将被永久删除且无法恢复。',
     input_schema: {
       type: 'object',
       properties: {
@@ -88,6 +88,9 @@ export const memoryDeleteTool: Tool = {
     log.info(`Deleted memory: ${key} (scope: ${scope ?? 'user'})`);
     return `已删除记忆: ${key}${scope ? ` (scope: ${scope})` : ''}`;
   },
+
+  riskLevel: 'high',
+  requiresConfirmation: true,
 };
 
 export const memorySearchTool: Tool = {

@@ -42,31 +42,70 @@ interface SubAgentContext {
   abortSignal?: AbortSignal;
 }
 
+/**
+ * 构建 vision sub-agent 的专用 schema（支持 image_path 参数）
+ */
+function buildVisionSchema(config: SubAgentConfig): Tool['schema'] {
+  return {
+    name: config.type,
+    description:
+      'Analyze images and visual content. You MUST provide image_path so the sub-agent can read the image file. Use this when you need to understand or describe what is in an image.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: 'The analysis task to perform on the image',
+        },
+        image_path: {
+          type: 'string',
+          description:
+            'The file path of the image to analyze (required for image tasks)',
+        },
+      },
+      required: ['task'],
+    },
+  };
+}
+
+/**
+ * 构建通用 sub-agent schema
+ */
+function buildGenericSchema(config: SubAgentConfig): Tool['schema'] {
+  return {
+    name: config.type,
+    description: config.description,
+    input_schema: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: 'The task to delegate to this sub-agent',
+        },
+      },
+      required: ['task'],
+    },
+  };
+}
+
 function createSubAgentTool(
   config: SubAgentConfig,
   ctx: SubAgentContext,
 ): Tool {
+  const schema =
+    config.type === 'vision'
+      ? buildVisionSchema(config)
+      : buildGenericSchema(config);
+
   return {
-    schema: {
-      name: config.type,
-      description: config.description,
-      input_schema: {
-        type: 'object',
-        properties: {
-          task: {
-            type: 'string',
-            description: 'The task to delegate to this sub-agent',
-          },
-        },
-        required: ['task'],
-      },
-    },
+    schema,
 
     handler: async (input: Record<string, unknown>): Promise<string> => {
       const task = String(input.task);
+      const imagePath = input.image_path ? String(input.image_path) : '';
 
       log.info(
-        `Sub-agent '${config.type}' processing task: ${task.slice(0, 100)}`,
+        `Sub-agent '${config.type}' processing task: ${task.slice(0, 100)}${imagePath ? ` (image: ${imagePath})` : ''}`,
       );
 
       const subRegistry = buildSubRegistry(
@@ -74,8 +113,13 @@ function createSubAgentTool(
         config.allowedTools,
       );
 
+      let effectivePrompt = task;
+      if (config.type === 'vision' && imagePath) {
+        effectivePrompt = `${task}\n\nImage file to analyze: ${imagePath}\nUse the describe_image tool with path="${imagePath}" to analyze this image.`;
+      }
+
       const agentOptions: RunAgentOptions = {
-        prompt: task,
+        prompt: effectivePrompt,
         llmClient: ctx.llmClient,
         toolRegistry:
           subRegistry as import('../../tools/types.js').ToolRegistry,

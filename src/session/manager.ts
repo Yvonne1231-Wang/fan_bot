@@ -6,12 +6,14 @@ import type {
   Session,
   Message,
 } from './types.js';
-import type { LLMClient } from '../llm/types.js';
+import type { LLMClient, ContentBlock } from '../llm/types.js';
 import {
   summarizeMessages,
   createSummaryMessage,
   isSummaryMessage,
   estimateTokens,
+  countContentParts,
+  findMaxContentPartsMessage,
 } from './summarizer.js';
 import { createDebug } from '../utils/debug.js';
 
@@ -21,6 +23,7 @@ const DEFAULT_MAX_CONTEXT_MESSAGES = 40;
 const DEFAULT_MAX_TOKENS = 100000;
 const FRESH_ZONE_SIZE = 10;
 const COMPRESS_BATCH_SIZE = 10;
+const MAX_CONTENT_PARTS_PER_MESSAGE = 100;
 
 export interface CompressionConfig {
   maxTokens?: number;
@@ -34,6 +37,7 @@ export class SessionManagerImpl implements SessionManager {
   private readonly createdAtCache = new Map<string, number>();
   private llmClient: LLMClient | null = null;
   private compressionConfig: CompressionConfig;
+  private llmClientMissingWarned = false;
 
   constructor(options: SessionManagerOptions) {
     this.store = options.store;
@@ -135,28 +139,111 @@ export class SessionManagerImpl implements SessionManager {
     return [firstMessage, ...keptFromEnd];
   }
 
+  /**
+   * 拆分 content parts 超限的消息。
+   * 当单条消息的 content blocks 数量超过 MAX_CONTENT_PARTS_PER_MESSAGE 时，
+   * 将其拆分为多条消息，每条不超过限制。
+   * 主要处理 user 消息中堆积大量 tool_result 的场景。
+   */
+  private splitOverflowingMessages(messages: Message[]): Message[] {
+    const result: Message[] = [];
+
+    for (const msg of messages) {
+      const partsCount = countContentParts(msg);
+      if (partsCount <= MAX_CONTENT_PARTS_PER_MESSAGE) {
+        result.push(msg);
+        continue;
+      }
+
+      log.warn(
+        `Splitting message with ${partsCount} content parts into chunks of ${MAX_CONTENT_PARTS_PER_MESSAGE}`,
+      );
+
+      // 按 tool_result 和非 tool_result 分组
+      const nonToolResults = msg.content.filter(
+        (b) => b.type !== 'tool_result',
+      );
+      const toolResults = msg.content.filter(
+        (b): b is Extract<ContentBlock, { type: 'tool_result' }> =>
+          b.type === 'tool_result',
+      );
+
+      // 第一条消息：原始文本 + tool_use + 前 N 个 tool_result
+      const firstChunkSize = Math.min(
+        MAX_CONTENT_PARTS_PER_MESSAGE - nonToolResults.length,
+        toolResults.length,
+      );
+
+      if (firstChunkSize > 0) {
+        result.push({
+          role: msg.role,
+          content: [...nonToolResults, ...toolResults.slice(0, firstChunkSize)],
+        });
+      } else if (nonToolResults.length > 0) {
+        // 即使非 tool_result 部分也超限（极端情况），强制截断
+        result.push({
+          role: msg.role,
+          content: nonToolResults.slice(0, MAX_CONTENT_PARTS_PER_MESSAGE),
+        });
+      }
+
+      // 剩余 tool_result 拆分为额外的 user 消息
+      let remaining = toolResults.slice(firstChunkSize);
+      while (remaining.length > 0) {
+        const chunk = remaining.slice(0, MAX_CONTENT_PARTS_PER_MESSAGE);
+        remaining = remaining.slice(MAX_CONTENT_PARTS_PER_MESSAGE);
+        result.push({
+          role: 'user',
+          content: chunk,
+        });
+      }
+    }
+
+    return result;
+  }
+
   async compress(messages: Message[]): Promise<Message[]> {
     if (!this.llmClient) {
-      log.warn('No LLM client set, falling back to simple pruning');
+      if (!this.llmClientMissingWarned) {
+        log.error(
+          'setLLMClient() was never called — compress() is falling back to lossy prune(). ' +
+            'Ensure all bootstrap entries call sessionManager.setLLMClient(llmClient).',
+        );
+        this.llmClientMissingWarned = true;
+      }
       return this.prune(messages);
     }
 
     const maxTokens = this.compressionConfig.maxTokens ?? DEFAULT_MAX_TOKENS;
-    const freshZoneSize = this.compressionConfig.freshZoneSize ?? FRESH_ZONE_SIZE;
-    const compressBatchSize = this.compressionConfig.compressBatchSize ?? COMPRESS_BATCH_SIZE;
+    const freshZoneSize =
+      this.compressionConfig.freshZoneSize ?? FRESH_ZONE_SIZE;
+    const compressBatchSize =
+      this.compressionConfig.compressBatchSize ?? COMPRESS_BATCH_SIZE;
 
     const currentTokens = estimateTokens(messages);
     if (currentTokens <= maxTokens) {
+      const overflowInfo = findMaxContentPartsMessage(messages);
+      if (overflowInfo && overflowInfo.count > MAX_CONTENT_PARTS_PER_MESSAGE) {
+        log.warn(
+          `Message at index ${overflowInfo.index} has ${overflowInfo.count} content parts (limit: ${MAX_CONTENT_PARTS_PER_MESSAGE}), splitting`,
+        );
+        return this.splitOverflowingMessages(messages);
+      }
       return messages;
     }
 
-    log.info(`Compressing session: ${currentTokens} tokens > ${maxTokens} limit`);
+    log.info(
+      `Compressing session: ${currentTokens} tokens > ${maxTokens} limit`,
+    );
 
-    const freshZone = messages.slice(-freshZoneSize);
-    const compressionZone = messages.slice(0, -freshZoneSize);
+    // 压缩前先拆分超限消息，避免压缩后仍然超限
+    let workingMessages = this.splitOverflowingMessages(messages);
+
+    const freshZone = workingMessages.slice(-freshZoneSize);
+    const compressionZone = workingMessages.slice(0, -freshZoneSize);
 
     if (compressionZone.length === 0) {
-      return messages;
+      return workingMessages;
     }
 
     const existingSummaries = compressionZone.filter(isSummaryMessage);
@@ -166,23 +253,48 @@ export class SessionManagerImpl implements SessionManager {
       return [...compressionZone, ...freshZone];
     }
 
-    const toCompress = regularMessages.slice(0, compressBatchSize);
-    const remaining = regularMessages.slice(compressBatchSize);
+    let currentRegular = regularMessages;
+    let currentSummaries = existingSummaries;
+    const maxRounds = 5;
 
-    log.debug(`Compressing ${toCompress.length} messages into summary`);
+    for (let round = 0; round < maxRounds; round++) {
+      if (currentRegular.length < compressBatchSize) break;
 
-    const summary = await summarizeMessages(toCompress, this.llmClient);
-    const summaryMessage = createSummaryMessage(
-      summary,
-      0,
-      compressBatchSize,
-      toCompress.length,
-    );
+      const toCompress = currentRegular.slice(0, compressBatchSize);
+      currentRegular = currentRegular.slice(compressBatchSize);
 
-    const compressed = [...existingSummaries, summaryMessage, ...remaining, ...freshZone];
+      log.debug(
+        `Compressing ${toCompress.length} messages into summary (round ${round + 1})`,
+      );
+
+      const summary = await summarizeMessages(toCompress, this.llmClient);
+      const summaryMessage = createSummaryMessage(
+        summary,
+        0,
+        compressBatchSize,
+        toCompress.length,
+      );
+
+      currentSummaries = [...currentSummaries, summaryMessage];
+
+      const candidateTokens = estimateTokens([
+        ...currentSummaries,
+        ...currentRegular,
+        ...freshZone,
+      ]);
+
+      if (candidateTokens <= maxTokens) {
+        log.debug(`Token budget met after ${round + 1} rounds`);
+        break;
+      }
+    }
+
+    const compressed = [...currentSummaries, ...currentRegular, ...freshZone];
 
     const newTokens = estimateTokens(compressed);
-    log.info(`Compression complete: ${currentTokens} -> ${newTokens} tokens (${Math.round((1 - newTokens / currentTokens) * 100)}% reduction)`);
+    log.info(
+      `Compression complete: ${currentTokens} -> ${newTokens} tokens (${Math.round((1 - newTokens / currentTokens) * 100)}% reduction)`,
+    );
 
     return compressed;
   }

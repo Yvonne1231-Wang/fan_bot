@@ -153,6 +153,8 @@ export function createMessageHandler(
     if (shouldPlan(userQuery)) {
       const plan = await createPlan(effectivePrompt, llmClient);
       let lastResult = '';
+      // 使用可变引用追踪累积的消息，避免 step 间 context 丢失
+      let currentMessages = messages;
 
       for (const step of plan.steps) {
         step.status = 'running';
@@ -160,7 +162,7 @@ export function createMessageHandler(
           prompt: `${step.title}\n\nContext from previous steps:\n${lastResult}`,
           llmClient,
           toolRegistry: registry,
-          initialMessages: messages,
+          initialMessages: currentMessages,
           maxIterations:
             Number(process.env.MAX_AGENT_ITERATIONS) ||
             DEFAULT_MAX_AGENT_ITERATIONS,
@@ -174,15 +176,25 @@ export function createMessageHandler(
         step.status = 'done';
         step.result = result.response;
         lastResult = result.response;
-        await sessionManager.save(sessionId, result.messages);
+        // 累积 messages，下一个 step 能看到之前的对话上下文
+        currentMessages = result.messages;
       }
 
+      // Plan 完成后统一保存最终累积的消息
+      await sessionManager.save(sessionId, currentMessages);
+
       responseText = `Plan complete.\n\nFinal result:\n${lastResult}`;
+
+      // 后台压缩 session，与非 plan 模式一致
+      runBackgroundTask('plan-session-compress', async () => {
+        const compressed = await sessionManager.compress(currentMessages);
+        await sessionManager.save(sessionId, compressed);
+      });
 
       runBackgroundTask('plan-memory-extract', async () => {
         if (memory) {
           const extraction = await extractMemories(
-            messages.slice(-8),
+            currentMessages.slice(-8),
             llmClient,
             memory,
           );

@@ -15,6 +15,9 @@ import { randomUUID } from 'crypto';
 
 const log = createDebug('llm:openai');
 
+const MAX_CONTENT_PARTS_PER_MESSAGE = 100;
+const MAX_TOOL_RESULT_CHARS = 15000;
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 interface OpenAIClientOptions {
@@ -46,23 +49,30 @@ function safeParseJSON(str: string): Record<string, unknown> {
 /**
  * Convert tool result blocks to OpenAI tool message format.
  * OpenAI uses separate 'tool' role messages for results instead of content blocks.
+ * 同时对超长工具结果进行截断，防止单条结果撑爆上下文。
  */
 function toolResultToOpenAIMessage(
   block: ToolResultBlock,
 ): OpenAI.Chat.ChatCompletionToolMessageParam {
-  // ToolResultBlock.content can be string | Array<TextBlock | ImageBlock>
-  // OpenAI SDK expects string for tool message content
   let content: string;
   if (typeof block.content === 'string') {
     content = block.content;
   } else if (Array.isArray(block.content)) {
-    // Convert TextBlock | ImageBlock array to string
     content = block.content
       .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
       .map((c) => c.text)
       .join('\n');
   } else {
     content = '';
+  }
+
+  if (content.length > MAX_TOOL_RESULT_CHARS) {
+    log.warn(
+      `Tool result truncated: ${content.length} -> ${MAX_TOOL_RESULT_CHARS} chars`,
+    );
+    content =
+      content.slice(0, MAX_TOOL_RESULT_CHARS) +
+      '\n\n[... output truncated due to size limit ...]';
   }
 
   return {
@@ -124,7 +134,8 @@ function toOpenAIToolCalls(
 
 /**
  * Convert internal messages to OpenAI format.
- * This is the main entry point for message conversion.
+ * 核心转换入口，包含 content parts 超限自动拆分逻辑。
+ * OpenAI API 限制每条消息最多 100 个 content parts。
  */
 function toOpenAIMessages(
   messages: Message[],
@@ -199,18 +210,49 @@ function toOpenAIMessages(
       } as OpenAI.Chat.ChatCompletionAssistantMessageParam);
     } else if (msg.role === 'user') {
       if (toolResults.length > 0 && !content) {
-        result.push(...toolResults);
+        // 纯 tool_result 消息：按批次拆分，避免单次推送过多 tool 消息导致超限
+        pushToolResultsInBatches(result, toolResults);
       } else {
         result.push({
           role: 'user',
           content,
         } as OpenAI.Chat.ChatCompletionUserMessageParam);
-        result.push(...toolResults);
+        // 同样对附带文本的 tool_result 做拆分
+        pushToolResultsInBatches(result, toolResults);
       }
     }
   }
 
   return result;
+}
+
+/**
+ * 将 tool 结果按批次推送到消息数组中，每批不超过 MAX_CONTENT_PARTS_PER_MESSAGE 条。
+ * 防止单条内部消息携带大量 tool_result 时超出 OpenAI 的 content parts 限制。
+ */
+function pushToolResultsInBatches(
+  result: OpenAI.Chat.ChatCompletionMessageParam[],
+  toolResults: Array<{
+    role: 'tool';
+    tool_call_id: string;
+    content: string;
+  }>,
+): void {
+  if (toolResults.length === 0) return;
+
+  if (toolResults.length <= MAX_CONTENT_PARTS_PER_MESSAGE) {
+    result.push(...toolResults);
+    return;
+  }
+
+  log.warn(
+    `Splitting ${toolResults.length} tool results into batches of ${MAX_CONTENT_PARTS_PER_MESSAGE}`,
+  );
+
+  for (let i = 0; i < toolResults.length; i += MAX_CONTENT_PARTS_PER_MESSAGE) {
+    const batch = toolResults.slice(i, i + MAX_CONTENT_PARTS_PER_MESSAGE);
+    result.push(...batch);
+  }
 }
 
 /**

@@ -17,6 +17,7 @@ import {
   memoryDeleteTool,
   memorySearchTool,
 } from '../tools/memory.js';
+import { describeImageTool } from '../media-understanding/describe-image-tool.js';
 import { CronStore, CronScheduler, CronExecutor } from '../cron/index.js';
 import {
   cronCreateTool,
@@ -30,6 +31,7 @@ import {
   loadAllSkills,
   getSkillEntries,
   getGlobalLoader,
+  loadSkillTools,
 } from '../skills/index.js';
 import type { MessageContext } from '../transport/unified.js';
 import { createDebug } from '../utils/debug.js';
@@ -92,7 +94,9 @@ export async function stopSkillsWatcher(): Promise<void> {
  *
  * 主 Agent 只保留基础工具，复杂任务通过 sub-agent 处理
  */
-export function registerDefaultTools(llmClient: LLMClient): void {
+export async function registerDefaultTools(
+  llmClient: LLMClient,
+): Promise<void> {
   registerTool(calculatorTool);
   registerTool(skillTool);
   registerTool(shellTool);
@@ -104,6 +108,12 @@ export function registerDefaultTools(llmClient: LLMClient): void {
   registerTool(memoryListTool);
   registerTool(memoryDeleteTool);
   registerTool(memorySearchTool);
+  registerTool(describeImageTool);
+
+  const skillTools = await loadSkillTools();
+  for (const tool of skillTools) {
+    registerTool(tool);
+  }
 
   const subAgentCtx = {
     llmClient,

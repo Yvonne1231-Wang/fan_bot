@@ -16,6 +16,7 @@ const DEFAULT_TIMEOUT = 30_000;
 const MAX_REDIRECTS = 10;
 const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const MAX_FETCH_OUTPUT_CHARS = 30000;
 
 // ============================================================
 // 类型定义
@@ -45,7 +46,10 @@ interface PageMeta {
 // HTTP 请求层 —— 纯 Node.js 内置模块
 // ============================================================
 
-function httpGet(url: string, timeout = DEFAULT_TIMEOUT): Promise<HttpResponse> {
+function httpGet(
+  url: string,
+  timeout = DEFAULT_TIMEOUT,
+): Promise<HttpResponse> {
   return new Promise((resolve, reject) => {
     const redirectChain: string[] = [url];
     let currentUrl = url;
@@ -60,7 +64,8 @@ function httpGet(url: string, timeout = DEFAULT_TIMEOUT): Promise<HttpResponse> 
         {
           headers: {
             'User-Agent': DEFAULT_USER_AGENT,
-            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            Accept:
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
             'Accept-Encoding': 'identity',
           },
@@ -68,7 +73,10 @@ function httpGet(url: string, timeout = DEFAULT_TIMEOUT): Promise<HttpResponse> 
         },
         (res) => {
           // 处理重定向
-          if (res.statusCode && [301, 302, 303, 307, 308].includes(res.statusCode)) {
+          if (
+            res.statusCode &&
+            [301, 302, 303, 307, 308].includes(res.statusCode)
+          ) {
             const location = res.headers.location;
             if (!location) {
               reject(new Error('Redirect without Location header'));
@@ -90,7 +98,10 @@ function httpGet(url: string, timeout = DEFAULT_TIMEOUT): Promise<HttpResponse> 
           res.on('end', () => {
             resolve({
               statusCode: res.statusCode || 0,
-              headers: res.headers as Record<string, string | string[] | undefined>,
+              headers: res.headers as Record<
+                string,
+                string | string[] | undefined
+              >,
               body: Buffer.concat(chunks).toString('utf-8'),
               finalUrl: currentUrl,
               redirectChain,
@@ -123,8 +134,10 @@ function simpleHtmlClean(html: string): string {
     .replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, '');
 
   // 移除其他无关标签但保留内容
-  cleaned = cleaned
-    .replace(/<\/?(?:nav|footer|header|aside|iframe|svg|canvas|video|audio)[^>]*>/gi, '');
+  cleaned = cleaned.replace(
+    /<\/?(?:nav|footer|header|aside|iframe|svg|canvas|video|audio)[^>]*>/gi,
+    '',
+  );
 
   // 提取 body 内容
   const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*)<\/body>/i);
@@ -133,8 +146,13 @@ function simpleHtmlClean(html: string): string {
 
 function extractMetaSimple(html: string): PageMeta {
   const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
-  const descMatch = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)/i) ||
-                   html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*name=["']description["']/i);
+  const descMatch =
+    html.match(
+      /<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)/i,
+    ) ||
+    html.match(
+      /<meta[^>]*content=["']([^"']*)["'][^>]*name=["']description["']/i,
+    );
 
   return {
     title: titleMatch?.[1]?.trim() || '',
@@ -158,7 +176,9 @@ class HybridWebFetcher {
     try {
       const result = await this.tryLinkAnalyze(url);
       if (result.textLength > 300) {
-        log.debug(`Link analyze succeeded for ${url}, content length: ${result.textLength}`);
+        log.debug(
+          `Link analyze succeeded for ${url}, content length: ${result.textLength}`,
+        );
         return {
           source: 'link_analyze',
           content: result.content,
@@ -202,7 +222,7 @@ class HybridWebFetcher {
 
     // 非 HTML：直接返回原文
     if (!contentType.includes('html')) {
-      const body = response.body.slice(0, 100_000); // 限制最大长度
+      const body = response.body.slice(0, MAX_FETCH_OUTPUT_CHARS);
       return {
         content: body,
         textLength: body.length,
@@ -236,7 +256,9 @@ class HybridWebFetcher {
     };
   }
 
-  private async tryTavily(url: string): Promise<{ content: string; url: string }> {
+  private async tryTavily(
+    url: string,
+  ): Promise<{ content: string; url: string }> {
     const client = tavily({ apiKey: this.tavilyApiKey! });
 
     const response = await client.extract([url], {
@@ -305,9 +327,20 @@ export const webFetchTool: Tool = {
         `Fetch succeeded via ${result.source}, confidence: ${result.confidence}`,
       );
 
-      return `Extracted content from ${result.url} (via ${result.source}):
+      let output = `Extracted content from ${result.url} (via ${result.source}):
 
 ${result.content}`;
+
+      if (output.length > MAX_FETCH_OUTPUT_CHARS) {
+        log.warn(
+          `Web fetch output truncated: ${output.length} -> ${MAX_FETCH_OUTPUT_CHARS} chars`,
+        );
+        output =
+          output.slice(0, MAX_FETCH_OUTPUT_CHARS) +
+          '\n\n[... content truncated due to size limit ...]';
+      }
+
+      return output;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log.error(`Fetch failed: ${message}`);
