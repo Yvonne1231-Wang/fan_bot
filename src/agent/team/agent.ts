@@ -14,6 +14,7 @@ import { createDebug } from '../../utils/debug.js';
 import { getAgentPrompt, AGENT_PROMPTS } from './agent-prompts.js';
 import { getAgentToolRegistry } from './agent-tools.js';
 import { getErrorMessage } from '../../utils/error.js';
+import { buildTaskContext, formatTaskContextPrompt } from './task-context.js';
 
 const debug = createDebug('agent:team');
 
@@ -31,6 +32,8 @@ export class AgentTeam {
   private agents: TeamAgent[] = [];
   private tasks: TeamTask[] = [];
   private messages: TeamMessage[] = [];
+  /** 用户原始请求，用于构建子代理的共享上下文 */
+  private userGoal = '';
 
   constructor(config: TeamConfig) {
     this.config = config;
@@ -83,6 +86,7 @@ export class AgentTeam {
 
   async planTask(prompt: string): Promise<TeamTask[]> {
     debug.info('Planning task: %s', prompt);
+    this.userGoal = prompt;
 
     const llmClient = this.config.llmClient;
     if (!llmClient) {
@@ -183,7 +187,9 @@ export class AgentTeam {
         throw new Error(`Agent ${executor.type} has no tool registry`);
       }
 
-      const taskPrompt = this.buildTaskPrompt(task, executor);
+      // 使用 TaskContext 构建精简的任务上下文，而不是传递完整对话历史
+      const taskContext = buildTaskContext(task, this.tasks, this.userGoal);
+      const taskPrompt = formatTaskContextPrompt(taskContext);
 
       const agentResult: AgentResult = await runAgent({
         prompt: taskPrompt,
