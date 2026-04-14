@@ -21,6 +21,7 @@ import { FeishuCardClient } from './card-client.js';
 import { StreamingCardRenderer } from './card.js';
 import { createDebug } from '../utils/debug.js';
 import { runWithContext } from '../tools/registry.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('feishu:adapter');
 
@@ -767,7 +768,7 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
         }
       } catch (error) {
         const errorMessage =
-          error instanceof Error ? error.message : String(error);
+          getErrorMessage(error);
 
         if (abortController.signal.aborted) {
           log.info(`Task aborted for chat: ${chatId}`);

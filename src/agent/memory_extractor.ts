@@ -1,6 +1,7 @@
 import type { LLMClient, Message } from '../llm/types.js';
 import type { MemoryService } from '../memory/types.js';
 import { createDebug } from '../utils/debug.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('agent:memory_extractor');
 
@@ -108,7 +109,7 @@ Output only the JSON, nothing else.`;
     log.error(`Memory extraction failed: ${error}`);
     return {
       extracted: [],
-      reason: `Error: ${error instanceof Error ? error.message : String(error)}`,
+      reason: `Error: ${getErrorMessage(error)}`,
     };
   }
 }

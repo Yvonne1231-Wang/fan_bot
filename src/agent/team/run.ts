@@ -17,7 +17,9 @@ config();
 import { createLLMClient, Provider } from '../../llm/index.js';
 import { AgentTeam } from './agent.js';
 import type { TeamConfig, ProgressEvent, TeamTask } from './types.js';
+import { createDebug } from '../../utils/debug.js';
 
+const debug = createDebug('agent:team:run');
 /**
  * 显示 DAG 关系图
  */
@@ -199,8 +201,8 @@ function extractOutputLocations(
               location: input.path,
             });
           }
-        } catch {
-          // ignore
+        } catch (err) {
+          debug.debug('Failed to parse tool call input:', err);
         }
       }
     });

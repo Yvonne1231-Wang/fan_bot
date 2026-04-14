@@ -1,5 +1,6 @@
 // ─── CLI Adapter Bootstrap ───────────────────────────────────────────────────
 
+import { createDebug } from '../utils/debug.js';
 import { createInterface } from 'readline';
 import { getUserId } from '../user.js';
 import { createLLMClientFromEnv } from '../llm/index.js';
@@ -8,7 +9,10 @@ import { getMemory } from '../memory/index.js';
 import { CLIChannelAdapter } from '../transport/index.js';
 import { createPermissionServiceFromEnv } from '../permission/index.js';
 import { loadMediaConfigFromEnv } from '../media-understanding/index.js';
+
+const log = createDebug('bootstrap:cli');
 import { createMessageHandler } from '../handler.js';
+import { runWithContext } from '../tools/registry.js';
 import {
   DEFAULT_SESSION_DIR,
   getCachedSkillEntries,
@@ -35,15 +39,15 @@ export async function startCLIAdapter(
   const memory = getMemory();
   memory.setUserId(userId);
 
-  registerDefaultTools(llmClient);
+  await registerDefaultTools(llmClient);
 
   const sid = sessionId || `session-${Date.now()}`;
   const initialMessages = await sessionManager.load(sid);
 
   if (initialMessages.length > 0) {
-    console.log(`Loaded session: ${sid}`);
-    console.log(`Messages: ${initialMessages.length}`);
-    console.log('');
+    log.info(`Loaded session: ${sid}`);
+    log.info(`Messages: ${initialMessages.length}`);
+    log.info('');
   }
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -98,7 +102,14 @@ export async function startCLIAdapter(
     }
 
     try {
-      const response = await messageHandler(message);
+      // 使用 runWithContext 隔离工具上下文，确保工具能获取当前请求信息
+      const ctx = {
+        channel: message.context.channel,
+        userId: message.context.userId,
+        sessionId: message.context.sessionId,
+        chatId: message.context.dmId,
+      };
+      const response = await runWithContext(ctx, () => messageHandler(message));
       return response;
     } finally {
       adapter.setAbortController(null);

@@ -3,6 +3,7 @@
 import type { LLMClient } from './types.js';
 import { createAnthropicClient } from './anthropic.js';
 import { createOpenAIClient } from './openai.js';
+import { getErrorMessage } from '../utils/error.js';
 
 // ─── Provider Constants ─────────────────────────────────────────────────────
 
@@ -151,6 +152,7 @@ export type {
 
 // ─── Smoke Test ─────────────────────────────────────────────────────────────
 
+// eslint-disable-next-line no-console -- smoke test is a standalone CLI diagnostic tool
 async function runSmokeTest(): Promise<void> {
   console.log('Running LLM client smoke test...\n');
 
@@ -208,7 +210,7 @@ async function runSmokeTest(): Promise<void> {
       console.log('  Anthropic test: ✅\n');
     } catch (error) {
       console.error(
-        `  Anthropic test failed: ${error instanceof Error ? error.message : String(error)}`,
+        `  Anthropic test failed: ${getErrorMessage(error)}`,
       );
       console.log('  Anthropic test: ❌\n');
     }
@@ -255,7 +257,7 @@ async function runSmokeTest(): Promise<void> {
       console.log('  Ark test: ✅\n');
     } catch (error) {
       console.error(
-        `  Ark test failed: ${error instanceof Error ? error.message : String(error)}`,
+        `  Ark test failed: ${getErrorMessage(error)}`,
       );
       console.log('  Ark test: ❌\n');
     }
@@ -272,7 +274,7 @@ async function runSmokeTest(): Promise<void> {
 if (import.meta.url === `file://${process.argv[1]}`) {
   runSmokeTest().catch((error) => {
     console.error(
-      `Smoke test failed: ${error instanceof Error ? error.message : String(error)}`,
+      `Smoke test failed: ${getErrorMessage(error)}`,
     );
     process.exit(1);
   });

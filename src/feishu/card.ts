@@ -81,6 +81,18 @@ interface CardState {
   errorMessage?: string;
 }
 
+
+/** 飞书卡片 JSON 元素（非严格定义，仅用于内部构建） */
+type CardElement = Record<string, unknown>;
+
+/** 工具输入参数（来自 LLM 的 tool_use，结构不确定） */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool inputs from LLM are inherently untyped
+type ToolInput = Record<string, any> | string | undefined;
+
+/** 工具输出（来自 tool_result，结构不确定） */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool outputs from LLM are inherently untyped
+type ToolOutput = Record<string, any> | string;
+
 /** 飞书客户端接口 (仅需 create + patch) */
 export interface FeishuCardClient {
   createInteractiveCard(
@@ -243,7 +255,7 @@ export class StreamingCardRenderer {
    */
   async onToolStart(
     toolName: string,
-    input?: any,
+    input?: ToolInput,
     parentToolUseId?: string | null,
     toolUseId?: string,
   ): Promise<void> {
@@ -307,7 +319,7 @@ export class StreamingCardRenderer {
    */
   async onToolEnd(
     toolName: string,
-    output: any,
+    output: ToolOutput,
     parentToolUseId?: string | null,
   ): Promise<void> {
     if (this.isFallbackMode || this.isLocked) return;
@@ -484,8 +496,8 @@ export class StreamingCardRenderer {
 
   // ==================== Card Building ====================
 
-  private buildCard(): object {
-    const elements: any[] = [];
+  private buildCard(): Record<string, unknown> {
+    const elements: CardElement[] = [];
     const isFinished =
       this.state.phase === 'completed' ||
       this.state.phase === 'error' ||
@@ -552,7 +564,7 @@ export class StreamingCardRenderer {
 
   // -------- 卡片 Header --------
 
-  private buildCardHeader(): object {
+  private buildCardHeader(): CardElement {
     const phaseConfig: Record<
       CardPhase,
       { template: string; icon: string; text: string }
@@ -597,7 +609,7 @@ export class StreamingCardRenderer {
   // -------- 步骤面板 --------
 
   /** 外层步骤面板 */
-  private buildStepsPanel(isFinished: boolean): any {
+  private buildStepsPanel(isFinished: boolean): CardElement {
     const totalSteps = this.countAllSteps(this.state.steps);
     const stepElements = this.buildStepElements(this.state.steps);
 
@@ -627,8 +639,8 @@ export class StreamingCardRenderer {
    * Sub-Agent 步骤渲染为嵌套 collapsible_panel，
    * 子步骤中如果还有 Sub-Agent 则继续递归（飞书最多 5 层）。
    */
-  private buildStepElements(steps: StepInfo[]): any[] {
-    const elements: any[] = [];
+  private buildStepElements(steps: StepInfo[]): CardElement[] {
+    const elements: CardElement[] = [];
 
     for (const step of steps) {
       if (
@@ -652,7 +664,7 @@ export class StreamingCardRenderer {
    * 无背景色无边框，视觉轻量。
    * 子元素通过 buildStepElements 递归构建，支持多层嵌套。
    */
-  private buildSubAgentPanel(step: StepInfo): any {
+  private buildSubAgentPanel(step: StepInfo): CardElement {
     const icon = this.getStepIcon(step);
     const childCount = step.childSteps?.length ?? 0;
     const statusSuffix =
@@ -693,7 +705,7 @@ export class StreamingCardRenderer {
    * 构建 Skill 折叠面板。
    * Skill 类型步骤渲染为可展开的折叠面板，显示 skill 内容摘要。
    */
-  private buildSkillPanel(step: StepInfo): any {
+  private buildSkillPanel(step: StepInfo): CardElement {
     const icon = this.getStepIcon(step);
     const statusText = step.status === 'running' ? ' · loading...' : '';
     const statusLabel =
@@ -794,7 +806,7 @@ export class StreamingCardRenderer {
   }
 
   /** 构建单个步骤行 */
-  private buildStepLine(step: StepInfo): any {
+  private buildStepLine(step: StepInfo): CardElement {
     const icon = this.getStepIcon(step);
     let text: string;
 
@@ -847,7 +859,7 @@ export class StreamingCardRenderer {
 
   private resolveToolInfo(
     toolName: string,
-    input?: any,
+    input?: ToolInput,
   ): { category: 'skill' | 'tool' | 'subagent'; displayName: string } {
     if (toolName === 'Skill') {
       let skillName = '';
@@ -1078,7 +1090,7 @@ export class StreamingCardRenderer {
     return `${minutes}m ${remainSec.toFixed(0)}s`;
   }
 
-  private buildToolActionSummary(toolName: string, input?: any): string {
+  private buildToolActionSummary(toolName: string, input?: ToolInput): string {
     if (!input) return '';
 
     if (toolName === 'Skill') {

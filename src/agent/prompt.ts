@@ -311,7 +311,7 @@ ${ctx}`;
 
   let skillsContext = '';
   if (skills && skills.length > 0) {
-    skillsContext = `\n\n## Available Skills\n\n${formatSkillsForPrompt(skills)}\n\n**How to use skills:**\n1. Before using tools related to a skill, call the \`Skill\` tool with the skill name to declare your intent\n2. Example: \`Skill(skill_name="feishu-create-doc", action="create")\`\n3. This helps track skill usage and provides better visibility to the user\n4. Then proceed with the actual tool calls for that skill\n\nRefer to each skill's SKILL.md file for detailed guidance on tool usage patterns, constraints, and best practices.`;
+    skillsContext = `\n\n## Available Skills\n\n${formatSkillsForPrompt(skills)}\n\n**How to use skills — MANDATORY workflow:**\n1. **BEFORE** using \`lark-cli\` or any skill-specific tool, you **MUST** call \`Skill(skill_name="...")\` first\n2. The Skill tool returns the complete SKILL.md with exact command syntax, parameters, and examples\n3. **NEVER guess lark-cli command names** — always read the SKILL.md guide first\n4. Example: \`Skill(skill_name="lark-im")\` → read the returned commands → then call \`shell\` with the correct command\n\n⚠️ Many lark-cli shortcuts look similar but are different commands. Using a wrong command (e.g. \`+chat-messages-search\` instead of \`+messages-search\`) will fail silently. Always verify against SKILL.md.`;
   }
 
   const extra = extraContext ? `\n\n${extraContext}` : '';

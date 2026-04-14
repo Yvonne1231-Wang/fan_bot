@@ -15,6 +15,7 @@ import type {
 } from './unified.js';
 import type { SessionManager } from '../session/types.js';
 import type { MemoryService, Scope } from '../memory/types.js';
+import { getErrorMessage } from '../utils/error.js';
 
 /**
  * CLI 适配器配置
@@ -262,7 +263,7 @@ export class CLIChannelAdapter extends BaseChannelAdapter {
       }
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        getErrorMessage(error);
       console.error('Error:', errorMessage);
     }
   }
@@ -397,7 +398,7 @@ export class CLIChannelAdapter extends BaseChannelAdapter {
     if (sessionManager) {
       sessionManager.load(this.currentSessionId).then((messages) => {
         console.log(`Messages: ${messages.length}`);
-      });
+      }).catch(() => { /* status display is best-effort */ });
     }
   }
 

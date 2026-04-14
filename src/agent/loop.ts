@@ -11,8 +11,11 @@ import type {
 import type { ToolRegistry } from '../tools/types.js';
 import type { MemoryService } from '../memory/types.js';
 import { createDebug } from '../utils/debug.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('agent:loop');
+
+const MAX_TOOL_RESULT_CHARS = 15000;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -68,15 +71,28 @@ function assistantMessage(content: ContentBlock[]): Message {
   };
 }
 
+/**
+ * 构建工具结果 content block，对超长结果自动截断
+ */
 function toolResultBlock(
   toolUseId: string,
   content: string,
   isError = false,
 ): ContentBlock {
+  let truncatedContent = content;
+  if (content.length > MAX_TOOL_RESULT_CHARS) {
+    log.warn(
+      `Tool result truncated: ${content.length} -> ${MAX_TOOL_RESULT_CHARS} chars`,
+    );
+    truncatedContent =
+      content.slice(0, MAX_TOOL_RESULT_CHARS) +
+      '\n\n[... output truncated due to size limit ...]';
+  }
+
   return {
     type: 'tool_result',
     tool_use_id: toolUseId,
-    content,
+    content: truncatedContent,
     is_error: isError,
   };
 }
@@ -170,7 +186,13 @@ function isRetryable(error: Error): boolean {
     msg.includes('500') ||
     msg.includes('502') ||
     msg.includes('503') ||
-    msg.includes('overloaded')
+    msg.includes('overloaded') ||
+    msg.includes('api_error') ||
+    msg.includes('internal network') ||
+    msg.includes('network failure') ||
+    msg.includes('econnreset') ||
+    msg.includes('etimedout') ||
+    msg.includes('socket hang up')
   );
 }
 
@@ -377,7 +399,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
               toolResults.push(toolResultBlock(toolUse.id, result));
             } catch (error) {
               const message =
-                error instanceof Error ? error.message : String(error);
+                getErrorMessage(error);
               log.error(`tool error: ${message}`);
               callbacks?.onToolEnd?.(toolUse.name, `Error: ${message}`, null);
               toolResults.push(
@@ -412,7 +434,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
       }
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = getErrorMessage(error);
     log.error(`Agent error: ${message}`);
     callbacks?.onError?.(message);
     throw error;

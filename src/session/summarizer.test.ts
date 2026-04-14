@@ -27,9 +27,13 @@ describe('session/summarizer token estimation', () => {
       { role: 'assistant', content: [{ type: 'text', text: '好的，请问具体时间是几点？' }] },
     ];
     // 旧逻辑大致为长度/4
-    const naive = Math.ceil(messages[0].content[0].text.length / 4)
-      + Math.ceil(messages[1].content[0].text.length / 4)
-      + 8; // 每条额外 +4
+    const block0 = messages[0].content[0];
+    const block1 = messages[1].content[0];
+    const text0 = block0.type === 'text' ? block0.text : '';
+    const text1 = block1.type === 'text' ? block1.text : '';
+    const naive = Math.ceil(text0.length / 4)
+      + Math.ceil(text1.length / 4)
+      + 8;
     const fixed = estimateTokens(messages);
     expect(fixed).toBeGreaterThan(naive);
   });

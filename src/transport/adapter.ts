@@ -8,6 +8,7 @@ import type {
   MessageContext,
 } from './unified.js';
 import type { AgentCallbacks } from '../llm/types.js';
+import { getErrorMessage } from '../utils/error.js';
 
 /**
  * 渠道适配器配置
@@ -204,7 +205,7 @@ export abstract class BaseChannelAdapter implements ChannelAdapter {
       await this.send(response, message.context);
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        getErrorMessage(error);
       await this.sendError(message.context, errorMessage);
     }
   }

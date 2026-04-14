@@ -13,6 +13,7 @@ import type {
 } from '../cron/types.js';
 import { createDebug } from '../utils/debug.js';
 import { getToolContext } from './registry.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('tools:cron');
 
@@ -430,7 +431,7 @@ export const cronRunNowTool: Tool = {
       log.info(`Manually ran cron task: ${taskId}`);
       return `Task triggered successfully: ${taskId}`;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       return `Failed to run task: ${message}`;
     }
   },

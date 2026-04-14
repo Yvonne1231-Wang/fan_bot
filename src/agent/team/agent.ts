@@ -13,6 +13,7 @@ import type { AgentResult } from '../loop.js';
 import { createDebug } from '../../utils/debug.js';
 import { getAgentPrompt, AGENT_PROMPTS } from './agent-prompts.js';
 import { getAgentToolRegistry } from './agent-tools.js';
+import { getErrorMessage } from '../../utils/error.js';
 
 const debug = createDebug('agent:team');
 
@@ -190,9 +191,10 @@ export class AgentTeam {
         toolRegistry,
         systemPrompt: executor.systemPrompt,
         maxIterations: 20,
+        abortSignal: this.config.abortSignal,
         callbacks: {
           onContentDelta: (delta) => {
-            console.log(`      [${timestamp()}] 📝 ${delta.slice(0, 50)}...`);
+            debug.verbose(`[${timestamp()}] 📝 ${delta.slice(0, 50)}...`);
           },
         },
       });
@@ -220,7 +222,7 @@ export class AgentTeam {
     } catch (error) {
       task.status = 'error';
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        getErrorMessage(error);
 
       return {
         taskId: task.id,

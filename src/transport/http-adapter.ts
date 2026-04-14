@@ -1,5 +1,6 @@
 // ─── HTTP Channel Adapter ──────────────────────────────────────────────────
 
+import { createDebug } from '../utils/debug.js';
 import Fastify, {
   FastifyInstance,
   FastifyReply,
@@ -17,6 +18,7 @@ import type {
   ContentBlock,
   MessageContext,
 } from './unified.js';
+import { getErrorMessage } from '../utils/error.js';
 
 /**
  * HTTP 适配器配置
@@ -86,6 +88,9 @@ export interface HTTPSessionListResponse {
  * - Server-Sent Events (SSE) 流式响应
  * - 会话管理
  */
+
+const log = createDebug('transport:http');
+
 export class HTTPChannelAdapter extends BaseChannelAdapter {
   readonly channelType = 'http' as const;
   readonly name = 'HTTP Adapter';
@@ -110,7 +115,7 @@ export class HTTPChannelAdapter extends BaseChannelAdapter {
 
     const { port, host } = this.httpConfig;
     await this.server.listen({ port: port!, host: host! });
-    console.log(`HTTP server listening on ${host}:${port}`);
+    log.info(`HTTP server listening on ${host}:${port}`);
   }
 
   async send(
@@ -119,18 +124,12 @@ export class HTTPChannelAdapter extends BaseChannelAdapter {
   ): Promise<void> {
     // HTTP 模式下，响应通过 HTTP 请求直接返回，不需要主动发送
     // 这个方法用于其他场景（如 webhook 回调）
-    console.log(
-      `[HTTP] Sending response to session ${context.sessionId}:`,
-      response.id,
-    );
+    log.info(`[HTTP] Sending response to session ${context.sessionId}: ${response.id}`);
   }
 
   async sendStream(event: StreamEvent, context: MessageContext): Promise<void> {
     // HTTP 模式下的流式响应通过 SSE 实现
-    console.log(
-      `[HTTP] Stream event for session ${context.sessionId}:`,
-      event.type,
-    );
+    log.info(`[HTTP] Stream event for session ${context.sessionId}: ${event.type}`);
   }
 
   protected async doClose(): Promise<void> {
@@ -221,7 +220,7 @@ export class HTTPChannelAdapter extends BaseChannelAdapter {
       return reply.send(httpResponse);
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        getErrorMessage(error);
       return reply.status(500).send({ error: errorMessage });
     }
   }
@@ -236,7 +235,7 @@ export class HTTPChannelAdapter extends BaseChannelAdapter {
       return reply.send(result);
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        getErrorMessage(error);
       return reply.status(500).send({ error: errorMessage });
     }
   }

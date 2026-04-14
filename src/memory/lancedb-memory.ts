@@ -8,6 +8,8 @@ import type {
 } from './types.js';
 import type { LLMClient } from '../llm/types.js';
 import { createDebug } from '../utils/debug.js';
+import { getToolContext } from '../tools/registry.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('memory:lancedb');
 
@@ -99,6 +101,16 @@ export class LanceDBMemoryService implements MemoryService {
 
   setLLMClient(client: LLMClient): void {
     this.llmClient = client;
+  }
+
+  /**
+   * 获取当前有效的 userId。
+   * 优先从 AsyncLocalStorage（请求级隔离）读取，
+   * fallback 到实例级的 currentUserId，避免并发请求互相覆盖。
+   */
+  private getUserId(): string {
+    const ctx = getToolContext();
+    return ctx.userId || this.currentUserId;
   }
 
   private async initialize(): Promise<void> {
@@ -230,7 +242,7 @@ export class LanceDBMemoryService implements MemoryService {
 
     if (this.embeddingQueue) {
       this.embeddingQueue = this.embeddingQueue
-        .catch(() => {})
+        .catch((err) => { log.warn('Embedding queue error:', err); })
         .then(() => doEmbed());
     } else {
       this.embeddingQueue = doEmbed();
@@ -324,7 +336,7 @@ export class LanceDBMemoryService implements MemoryService {
   }
 
   private matchesUser(record: InternalRecord, userId?: string): boolean {
-    const targetUser = userId || this.currentUserId;
+    const targetUser = userId || this.getUserId();
     if (record.scope === 'global') return true;
     return record.userId === targetUser;
   }
@@ -705,7 +717,7 @@ export class LanceDBMemoryService implements MemoryService {
       return scores;
     } catch (error) {
       log.warn(
-        `Jina rerank failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Jina rerank failed: ${getErrorMessage(error)}`,
       );
       return this.rerankWithLLMPrompt(query, candidates);
     }
@@ -774,7 +786,7 @@ Only output the scores, nothing else.`;
       return scores;
     } catch (error) {
       log.warn(
-        `LLM rerank failed: ${error instanceof Error ? error.message : String(error)}`,
+        `LLM rerank failed: ${getErrorMessage(error)}`,
       );
       const scores = new Map<number, number>();
       candidates.forEach((_, i) => scores.set(i, 1 - i * 0.1));
@@ -791,7 +803,7 @@ Only output the scores, nothing else.`;
     if (!this.table) throw new Error('Table not initialized');
 
     log.debug(
-      `Remembering: ${key} = ${value} (scope: ${scope}, user: ${this.currentUserId})`,
+      `Remembering: ${key} = ${value} (scope: ${scope}, user: ${this.getUserId()})`,
     );
 
     const text = `${key}: ${value}`;
@@ -801,7 +813,7 @@ Only output the scores, nothing else.`;
     const validRecords = (await this.table
       .query()
       .where(
-        `key = '${this.escapeSQL(key)}' AND scope = '${scope}' AND userId = '${this.escapeSQL(this.currentUserId)}' AND validUntil = 0`,
+        `key = '${this.escapeSQL(key)}' AND scope = '${scope}' AND userId = '${this.escapeSQL(this.getUserId())}' AND validUntil = 0`,
       )
       .toArray()) as InternalRecord[];
 
@@ -819,7 +831,7 @@ Only output the scores, nothing else.`;
 
       const newRecord: InternalRecord = {
         id: newId,
-        userId: this.currentUserId,
+        userId: this.getUserId(),
         key,
         value,
         text,
@@ -841,7 +853,7 @@ Only output the scores, nothing else.`;
     const id = crypto.randomUUID();
     const record: InternalRecord = {
       id,
-      userId: this.currentUserId,
+      userId: this.getUserId(),
       key,
       value,
       text,
@@ -865,10 +877,10 @@ Only output the scores, nothing else.`;
     if (!this.table) throw new Error('Table not initialized');
 
     log.debug(
-      `Forgetting: ${key} (scope: ${scope || 'all'}, user: ${this.currentUserId})`,
+      `Forgetting: ${key} (scope: ${scope || 'all'}, user: ${this.getUserId()})`,
     );
 
-    let whereClause = `key = '${this.escapeSQL(key)}' AND userId = '${this.escapeSQL(this.currentUserId)}' AND validUntil = 0`;
+    let whereClause = `key = '${this.escapeSQL(key)}' AND userId = '${this.escapeSQL(this.getUserId())}' AND validUntil = 0`;
     if (scope) {
       whereClause += ` AND scope = '${scope}'`;
     }
@@ -900,7 +912,7 @@ Only output the scores, nothing else.`;
     const topK = opts?.topK ?? 5;
     const scope = opts?.scope;
     const useRerank = opts?.rerank ?? false;
-    const targetUserId = opts?.userId || this.currentUserId;
+    const targetUserId = opts?.userId || this.getUserId();
     const atTime = opts?.atTime
       ? typeof opts.atTime === 'number'
         ? opts.atTime
@@ -969,7 +981,7 @@ Only output the scores, nothing else.`;
       }
     } catch (error) {
       log.warn(
-        `BM25 search failed: ${error instanceof Error ? error.message : String(error)}`,
+        `BM25 search failed: ${getErrorMessage(error)}`,
       );
     }
 
@@ -1093,7 +1105,7 @@ Only output the scores, nothing else.`;
     await this.initialize();
     if (!this.table) throw new Error('Table not initialized');
 
-    let whereClause = `key = '${this.escapeSQL(key)}' AND userId = '${this.escapeSQL(this.currentUserId)}'`;
+    let whereClause = `key = '${this.escapeSQL(key)}' AND userId = '${this.escapeSQL(this.getUserId())}'`;
     if (scope) {
       whereClause += ` AND scope = '${scope}'`;
     }
@@ -1141,7 +1153,7 @@ Only output the scores, nothing else.`;
     const records = (await this.table
       .query()
       .where(
-        `key = '${this.escapeSQL(key)}' AND userId = '${this.escapeSQL(this.currentUserId)}' AND validUntil = 0`,
+        `key = '${this.escapeSQL(key)}' AND userId = '${this.escapeSQL(this.getUserId())}' AND validUntil = 0`,
       )
       .limit(1)
       .toArray()) as InternalRecord[];

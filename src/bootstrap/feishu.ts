@@ -49,7 +49,7 @@ export async function startFeishuAdapter(): Promise<void> {
   memory.setUserId(userId);
   sessionManager.setLLMClient(llmClient);
 
-  registerDefaultTools(llmClient);
+  await registerDefaultTools(llmClient);
 
   const permissionService = createPermissionServiceFromEnv();
   const mediaConfig = loadMediaConfigFromEnv();
@@ -89,10 +89,7 @@ export async function startFeishuAdapter(): Promise<void> {
     return messageHandler(message, callbacks);
   });
 
-  const resultSender = async (
-    result: string,
-    context: MessageContext,
-  ) => {
+  const resultSender = async (result: string, context: MessageContext) => {
     await adapter.send(
       {
         id: `cron-${Date.now()}`,
@@ -112,9 +109,9 @@ export async function startFeishuAdapter(): Promise<void> {
   });
   await cronScheduler.start();
 
-  async function shutdown(
-    feishuAdapter?: { close(): Promise<void> },
-  ): Promise<void> {
+  async function shutdown(feishuAdapter?: {
+    close(): Promise<void>;
+  }): Promise<void> {
     log.info('Shutting down...');
     await stopSkillsWatcher();
     await cronScheduler.stop();

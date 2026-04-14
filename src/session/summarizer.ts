@@ -6,6 +6,7 @@ import type {
   ToolResultBlock,
 } from '../llm/types.js';
 import { createDebug } from '../utils/debug.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('session:summarizer');
 
@@ -80,7 +81,7 @@ Output only the summary, nothing else.`;
     return summary;
   } catch (error) {
     log.error(`Summarization failed: ${error}`);
-    return `[Summary generation failed: ${error instanceof Error ? error.message : String(error)}]`;
+    return `[Summary generation failed: ${getErrorMessage(error)}]`;
   }
 }
 
@@ -137,4 +138,31 @@ export function estimateTextTokens(text: string): number {
   const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u30ff]/g) || []).length;
   const otherChars = text.length - cjkChars;
   return cjkChars + Math.ceil(otherChars / 4);
+}
+
+/**
+ * 统计单条消息的 content blocks 数量
+ */
+export function countContentParts(message: Message): number {
+  return message.content.length;
+}
+
+/**
+ * 找出消息数组中 content parts 数量最多的消息及其索引
+ */
+export function findMaxContentPartsMessage(
+  messages: Message[],
+): { index: number; count: number } | null {
+  let maxIndex = -1;
+  let maxCount = 0;
+
+  for (let i = 0; i < messages.length; i++) {
+    const count = countContentParts(messages[i]);
+    if (count > maxCount) {
+      maxCount = count;
+      maxIndex = i;
+    }
+  }
+
+  return maxIndex >= 0 ? { index: maxIndex, count: maxCount } : null;
 }

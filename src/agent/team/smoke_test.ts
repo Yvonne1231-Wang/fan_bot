@@ -18,6 +18,7 @@ import {
   createResearcherToolRegistry,
 } from './index.js';
 import type { TeamAgent, TeamConfig, TeamTask } from './types.js';
+import { getErrorMessage } from '../../utils/error.js';
 
 /**
  * 运行 Agent Team 测试
@@ -203,7 +204,7 @@ async function testTeamExecution(
 
     console.log('\n✓ 团队执行测试通过');
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = getErrorMessage(error);
     console.log(`\n⚠️  执行出错: ${errorMessage}`);
     throw error;
   }

@@ -69,26 +69,58 @@ Task: ${goal}`),
 }
 
 /**
+ * CJK 字符占比，用于判断是否为中文为主的消息
+ */
+function cjkRatio(text: string): number {
+  const cjk = (text.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || [])
+    .length;
+  return text.length > 0 ? cjk / text.length : 0;
+}
+
+/**
+ * 语言感知的 token 估算（中文 1 字符 ≈ 1 token，英文 4 字符 ≈ 1 token）
+ */
+function estimatePlanTokens(text: string): number {
+  let tokens = 0;
+  for (const ch of text) {
+    tokens += /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(ch) ? 1 : 0.25;
+  }
+  return Math.ceil(tokens);
+}
+
+/**
  * 判断用户消息是否需要启动多步计划
  *
- * 为避免误触发（如"先搜索一下然后告诉我"这类简单请求），
- * 要求消息足够长且包含明确的多步骤关键词组合。
+ * 使用语言感知的 token 阈值（而非字符长度），
+ * 并对中文高频词做上下文约束以避免误触发。
  */
 export function shouldPlan(message: string): boolean {
   if (message.startsWith('/plan ')) return true;
 
-  const MIN_PLAN_LENGTH = 30;
-  if (message.length < MIN_PLAN_LENGTH) return false;
+  const numberedListPattern =
+    /(?:^|\n)\s*[1１][.、)）]\s*\S.*(?:\n\s*[2２][.、)）]\s*\S)/m;
+  if (numberedListPattern.test(message)) return true;
 
-  const multiStepKeywords =
-    /(?:第一|第二|第三|步骤\s*[1-9]|step\s*[1-9]|1[.、)]\s*\S)/i;
-  if (multiStepKeywords.test(message)) return true;
+  const stepKeywords = /步骤\s*[1-9１-９]|step\s*[1-9]/i;
+  if (stepKeywords.test(message)) return true;
+
+  const isCJK = cjkRatio(message) > 0.3;
+  const MIN_PLAN_TOKENS = isCJK ? 20 : 30;
+  if (estimatePlanTokens(message) < MIN_PLAN_TOKENS) return false;
+
+  const ordinalWithAction =
+    /第[一二三][，,：:、]?\s*(?:步|阶段)?[，,：:]?\s*(?:[\u4e00-\u9fff]{2,})/;
+  if (ordinalWithAction.test(message)) {
+    const ordinalCount = (message.match(/第[一二三四五六七八九十]/g) || [])
+      .length;
+    if (ordinalCount >= 2) return true;
+  }
 
   const sequentialPattern =
-    /先.{5,}[，,。；;].{0,20}(然后|接着|之后|再).{5,}(然后|接着|再|最后|并且)/;
+    /先.{4,}[，,。；;].{0,20}(?:然后|接着|之后|再).{4,}[，,。；;].{0,20}(?:然后|接着|再|最后|并且).{4,}/;
   if (sequentialPattern.test(message)) return true;
 
-  const explicitPlanKeywords = /分(步|阶段|批)(骤|进行|完成|实现|处理|执行)/;
+  const explicitPlanKeywords = /分(步骤?|阶段|批次?)(进行|完成|实现|处理|执行)/;
   if (explicitPlanKeywords.test(message)) return true;
 
   return false;

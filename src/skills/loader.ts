@@ -385,3 +385,59 @@ export async function loadAllSkills(): Promise<LoadedSkills> {
 export function getSkillEntries(): SkillEntry[] {
   return globalLoader.getSkillEntries();
 }
+
+// ─── Skill Tools Auto-Loader ────────────────────────────────────────────────
+
+import type { Tool } from '../tools/types.js';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const SKILL_TOOLS_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  'tools',
+);
+
+/**
+ * 扫描 src/skills/tools/{skill-name}/ 目录，自动加载所有 Skill 关联工具。
+ *
+ * 约定：每个子目录导出 `tools: Tool[]`。
+ */
+export async function loadSkillTools(): Promise<Tool[]> {
+  const allTools: Tool[] = [];
+
+  if (!existsSync(SKILL_TOOLS_DIR)) {
+    log.debug('No skill tools directory found');
+    return allTools;
+  }
+
+  try {
+    const entries = await readdir(SKILL_TOOLS_DIR, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const indexPath = join(SKILL_TOOLS_DIR, entry.name, 'index.js');
+      if (!existsSync(indexPath)) continue;
+
+      try {
+        const mod = (await import(indexPath)) as { tools?: Tool[] };
+        if (Array.isArray(mod.tools)) {
+          allTools.push(...mod.tools);
+          log.info(
+            `Loaded ${mod.tools.length} tools from skill "${entry.name}"`,
+          );
+        } else {
+          log.warn(
+            `Skill tools module "${entry.name}" does not export a "tools" array`,
+          );
+        }
+      } catch (error) {
+        log.error(`Failed to load skill tools from "${entry.name}": ${error}`);
+      }
+    }
+  } catch (error) {
+    log.error(`Failed to scan skill tools directory: ${error}`);
+  }
+
+  return allTools;
+}

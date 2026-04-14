@@ -6,6 +6,7 @@ import { HTTPChannelAdapter } from '../transport/index.js';
 import { createPermissionServiceFromEnv } from '../permission/index.js';
 import { loadMediaConfigFromEnv } from '../media-understanding/index.js';
 import { createMessageHandler } from '../handler.js';
+import { runWithContext } from '../tools/registry.js';
 import type { CronResultSender } from '../cron/index.js';
 import {
   DEFAULT_SESSION_DIR,
@@ -33,7 +34,7 @@ export async function startHTTPServer(): Promise<void> {
   initMemoryWithLLM(llmClient);
   sessionManager.setLLMClient(llmClient);
 
-  registerDefaultTools(llmClient);
+  await registerDefaultTools(llmClient);
 
   const permissionService = createPermissionServiceFromEnv();
   const mediaConfig = loadMediaConfigFromEnv();
@@ -59,7 +60,14 @@ export async function startHTTPServer(): Promise<void> {
         done: true,
       };
     }
-    return messageHandler(message, callbacks);
+    // 使用 runWithContext 隔离工具上下文，确保工具能获取当前请求信息
+    const ctx = {
+      channel: message.context.channel,
+      userId: message.context.userId,
+      sessionId: message.context.sessionId,
+      chatId: message.context.dmId,
+    };
+    return runWithContext(ctx, () => messageHandler(message, callbacks));
   });
 
   adapter.setSessionListHandler(async () => {
