@@ -48,7 +48,7 @@ describe('PermissionService', () => {
       const message = createTestMessage('user-1', 'group-1', undefined);
       const result = await permissionService.checkPermission(message);
       expect(result.allowed).toBe(false);
-      expect(result.reason).toContain('not in whitelist');
+      expect(result.reason).toContain('直接调用');
     });
   });
 
@@ -129,7 +129,7 @@ describe('PermissionService', () => {
       const message = createTestMessage('user-1', 'blocked-group', undefined);
       const result = await service.checkPermission(message);
       expect(result.allowed).toBe(false);
-      expect(result.reason).toContain('blacklisted');
+      expect(result.reason).toContain('已被禁用');
     });
 
     it('should require mention when allowDirectCall is false', async () => {
@@ -146,7 +146,7 @@ describe('PermissionService', () => {
       const message = createTestMessage('user-1', 'test-group', undefined);
       const result = await service.checkPermission(message);
       expect(result.allowed).toBe(false);
-      expect(result.reason).toContain('Direct call');
+      expect(result.reason).toContain('直接调用');
     });
 
     it('should allow messages when user is mentioned', async () => {
@@ -179,7 +179,7 @@ describe('PermissionService', () => {
       const message = createTestMessage('blocked-user', undefined, 'dm-1');
       const result = await service.checkPermission(message);
       expect(result.allowed).toBe(false);
-      expect(result.reason).toContain('blacklisted');
+      expect(result.reason).toContain('已被禁用');
     });
 
     it('should allow only whitelisted users when policy is whitelist', async () => {
@@ -227,7 +227,7 @@ describe('PermissionService', () => {
         'dangerous-tool',
       );
       expect(result.allowed).toBe(false);
-      expect(result.reason).toContain('forbidden');
+      expect(result.reason).toContain('已禁用');
     });
 
     it('should allow only whitelisted tools when allowedTools is set', async () => {
