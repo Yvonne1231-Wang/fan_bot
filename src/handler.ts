@@ -21,6 +21,14 @@ import {
 } from './media-understanding/index.js';
 import { createDebug } from './utils/debug.js';
 import { updateProfileFromConversation } from './user/profile-updater.js';
+import {
+  countToolUses,
+  hasExplicitSkillRequest,
+  evaluateForSkill,
+  extractSkill,
+  savePendingSkill,
+  cleanupExpiredPending,
+} from './skills/extractor.js';
 
 const log = createDebug('handler');
 
@@ -224,6 +232,21 @@ export function createMessageHandler(
           );
         }
       });
+
+      runBackgroundTask('plan-skill-evaluate', async () => {
+        const toolUseCount = countToolUses(currentMessages);
+        if (toolUseCount < 3 && !hasExplicitSkillRequest(userQuery)) return;
+
+        const candidate = await evaluateForSkill(currentMessages, llmClient);
+        if (!candidate) return;
+
+        const draft = await extractSkill(currentMessages, candidate, llmClient);
+        await savePendingSkill({
+          candidate,
+          draft,
+          createdAt: Date.now(),
+        });
+      });
     } else {
       const result = await runAgent({
         prompt: effectivePrompt,
@@ -274,6 +297,26 @@ export function createMessageHandler(
             userId,
           );
         }
+      });
+
+      runBackgroundTask('skill-evaluate', async () => {
+        const toolUseCount = countToolUses(result.messages);
+        if (toolUseCount < 3 && !hasExplicitSkillRequest(userQuery)) return;
+
+        const candidate = await evaluateForSkill(result.messages, llmClient);
+        if (!candidate) return;
+
+        const draft = await extractSkill(result.messages, candidate, llmClient);
+        await savePendingSkill({
+          candidate,
+          draft,
+          createdAt: Date.now(),
+        });
+      });
+
+      // 清理过期的待确认技能
+      runBackgroundTask('skill-cleanup', async () => {
+        await cleanupExpiredPending();
       });
     }
 

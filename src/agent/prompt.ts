@@ -6,6 +6,7 @@ import type { SkillEntry } from '../skills/types.js';
 import { formatSkillsForPrompt } from '../skills/loader.js';
 import { createDebug } from '../utils/debug.js';
 import { getProfilePrompt } from '../user/profile.js';
+import { listPendingSkills } from '../skills/extractor.js';
 
 const log = createDebug('agent:prompt');
 
@@ -391,11 +392,24 @@ ${ctx}`;
 - "等等，我有个问题想问你——愚人节你最想恶作剧谁？"`;
   }
 
+  // 检查待确认的自动提取技能
+  let pendingSkillsContext = '';
+  try {
+    const pending = await listPendingSkills();
+    if (pending.length > 0) {
+      const names = pending.map((p) => `"${p.candidate.name}": ${p.candidate.description}`);
+      pendingSkillsContext = `\n\n## Pending Skills\n\nThe following auto-extracted skills are waiting for user confirmation:\n${names.join('\n')}\n\nWhen the user mentions confirming or rejecting a skill, use the skill management tools accordingly.`;
+    }
+  } catch {
+    // 不阻塞主流程
+  }
+
   return (
     base +
     profileContext +
     memoryContext +
     skillsContext +
+    pendingSkillsContext +
     `\n\n## Current Time\n\n${now}` +
     aprilFoolRules +
     extra
