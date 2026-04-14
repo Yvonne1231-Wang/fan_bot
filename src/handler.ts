@@ -20,6 +20,7 @@ import {
   unifiedToMsgContext,
 } from './media-understanding/index.js';
 import { createDebug } from './utils/debug.js';
+import { updateProfileFromConversation } from './user/profile-updater.js';
 
 const log = createDebug('handler');
 
@@ -131,6 +132,7 @@ export function createMessageHandler(
       userQuery,
       skills: getSkillEntries(),
       extraContext: channelInfo,
+      userId,
     });
 
     let responseText = '';
@@ -212,6 +214,16 @@ export function createMessageHandler(
           }
         }
       });
+
+      runBackgroundTask('plan-profile-update', async () => {
+        if (userId) {
+          await updateProfileFromConversation(
+            currentMessages.slice(-8),
+            llmClient,
+            userId,
+          );
+        }
+      });
     } else {
       const result = await runAgent({
         prompt: effectivePrompt,
@@ -251,6 +263,16 @@ export function createMessageHandler(
               `Background: Auto-extracted ${extraction.extracted.length} memories`,
             );
           }
+        }
+      });
+
+      runBackgroundTask('profile-update', async () => {
+        if (userId && result.messages.length >= 2) {
+          await updateProfileFromConversation(
+            result.messages.slice(-8),
+            llmClient,
+            userId,
+          );
         }
       });
     }

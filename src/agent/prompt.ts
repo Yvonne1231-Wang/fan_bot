@@ -5,6 +5,7 @@ import type { MemoryService } from '../memory/types.js';
 import type { SkillEntry } from '../skills/types.js';
 import { formatSkillsForPrompt } from '../skills/loader.js';
 import { createDebug } from '../utils/debug.js';
+import { getProfilePrompt } from '../user/profile.js';
 
 const log = createDebug('agent:prompt');
 
@@ -248,9 +249,10 @@ export async function buildSystemPrompt(
     memory?: MemoryService;
     userQuery?: string;
     skills?: SkillEntry[];
+    userId?: string;
   } = {},
 ): Promise<string> {
-  const { extraContext, memory, userQuery, skills } = options;
+  const { extraContext, memory, userQuery, skills, userId } = options;
 
   const identity = await loadIdentity();
   const soul = await loadSoul();
@@ -315,6 +317,18 @@ ${ctx}`;
   }
 
   const extra = extraContext ? `\n\n${extraContext}` : '';
+
+  let profileContext = '';
+  if (userId) {
+    try {
+      const profilePrompt = await getProfilePrompt(userId);
+      if (profilePrompt) {
+        profileContext = `\n\n${profilePrompt}`;
+      }
+    } catch (err) {
+      log.warn(`Failed to load user profile: ${err}`);
+    }
+  }
   const now = new Date().toLocaleString('zh-CN', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
@@ -379,6 +393,7 @@ ${ctx}`;
 
   return (
     base +
+    profileContext +
     memoryContext +
     skillsContext +
     `\n\n## Current Time\n\n${now}` +

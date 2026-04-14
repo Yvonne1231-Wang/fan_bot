@@ -2,7 +2,7 @@
 
 import { createDebug } from '../utils/debug.js';
 import { createInterface } from 'readline';
-import { getUserId } from '../user.js';
+import { getUserId } from '../user/index.js';
 import { createLLMClientFromEnv } from '../llm/index.js';
 import { createSessionManager, JSONLStore } from '../session/index.js';
 import { getMemory } from '../memory/index.js';
