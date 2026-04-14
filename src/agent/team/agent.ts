@@ -193,7 +193,7 @@ export class AgentTeam {
         abortSignal: this.config.abortSignal,
         callbacks: {
           onContentDelta: (delta) => {
-            console.log(`      [${timestamp()}] 📝 ${delta.slice(0, 50)}...`);
+            debug(`[${timestamp()}] 📝 ${delta.slice(0, 50)}...`);
           },
         },
       });

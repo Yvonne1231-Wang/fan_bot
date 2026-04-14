@@ -151,6 +151,7 @@ export type {
 
 // ─── Smoke Test ─────────────────────────────────────────────────────────────
 
+// eslint-disable-next-line no-console -- smoke test is a standalone CLI diagnostic tool
 async function runSmokeTest(): Promise<void> {
   console.log('Running LLM client smoke test...\n');
 

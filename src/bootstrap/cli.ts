@@ -1,5 +1,6 @@
 // ─── CLI Adapter Bootstrap ───────────────────────────────────────────────────
 
+import { createDebug } from '../utils/debug.js';
 import { createInterface } from 'readline';
 import { getUserId } from '../user.js';
 import { createLLMClientFromEnv } from '../llm/index.js';
@@ -8,6 +9,8 @@ import { getMemory } from '../memory/index.js';
 import { CLIChannelAdapter } from '../transport/index.js';
 import { createPermissionServiceFromEnv } from '../permission/index.js';
 import { loadMediaConfigFromEnv } from '../media-understanding/index.js';
+
+const log = createDebug('bootstrap:cli');
 import { createMessageHandler } from '../handler.js';
 import { runWithContext } from '../tools/registry.js';
 import {
@@ -42,9 +45,9 @@ export async function startCLIAdapter(
   const initialMessages = await sessionManager.load(sid);
 
   if (initialMessages.length > 0) {
-    console.log(`Loaded session: ${sid}`);
-    console.log(`Messages: ${initialMessages.length}`);
-    console.log('');
+    log(`Loaded session: ${sid}`);
+    log(`Messages: ${initialMessages.length}`);
+    log('');
   }
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
