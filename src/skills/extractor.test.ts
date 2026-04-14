@@ -199,13 +199,16 @@ const SKILLS_DIR = join(process.cwd(), '.fan_bot', 'skills');
 
 describe('skills/extractor pending skills', () => {
   beforeEach(() => {
-    // Clean up test dirs
-    if (existsSync(PENDING_DIR)) rmSync(PENDING_DIR, { recursive: true });
-    // Don't clean the entire skills dir (has real skills), only our test skill
+    // Only clean our own test files, not the entire directory (parallel tests)
+    const pendingFile = join(PENDING_DIR, 'test-skill.json');
+    if (existsSync(pendingFile)) rmSync(pendingFile, { force: true });
+    const testSkillDir = join(SKILLS_DIR, 'test-skill');
+    if (existsSync(testSkillDir)) rmSync(testSkillDir, { recursive: true });
   });
 
   afterEach(() => {
-    if (existsSync(PENDING_DIR)) rmSync(PENDING_DIR, { recursive: true });
+    const pendingFile = join(PENDING_DIR, 'test-skill.json');
+    if (existsSync(pendingFile)) rmSync(pendingFile, { force: true });
     const testSkillDir = join(SKILLS_DIR, 'test-skill');
     if (existsSync(testSkillDir)) rmSync(testSkillDir, { recursive: true });
   });
@@ -228,8 +231,10 @@ describe('skills/extractor pending skills', () => {
   it('saves and lists pending skills', async () => {
     await savePendingSkill(testPending);
     const pending = await listPendingSkills();
-    expect(pending.length).toBe(1);
-    expect(pending[0].candidate.name).toBe('test-skill');
+    // Don't assert exact count (parallel tests may add files to same dir)
+    const ours = pending.filter(p => p.candidate.name === 'test-skill');
+    expect(ours.length).toBe(1);
+    expect(ours[0].candidate.name).toBe('test-skill');
   });
 
   it('confirms a pending skill (writes SKILL.md)', async () => {
@@ -241,9 +246,10 @@ describe('skills/extractor pending skills', () => {
     const skillMd = join(SKILLS_DIR, 'test-skill', 'SKILL.md');
     expect(existsSync(skillMd)).toBe(true);
 
-    // Pending should be removed
+    // Our pending file should be removed
     const pending = await listPendingSkills();
-    expect(pending.length).toBe(0);
+    const ours = pending.filter(p => p.candidate.name === 'test-skill');
+    expect(ours.length).toBe(0);
   });
 
   it('rejects a pending skill', async () => {

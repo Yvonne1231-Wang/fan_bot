@@ -398,7 +398,7 @@ ${ctx}`;
     const pending = await listPendingSkills();
     if (pending.length > 0) {
       const names = pending.map((p) => `"${p.candidate.name}": ${p.candidate.description}`);
-      pendingSkillsContext = `\n\n## Pending Skills\n\nThe following auto-extracted skills are waiting for user confirmation:\n${names.join('\n')}\n\nWhen the user mentions confirming or rejecting a skill, use the skill management tools accordingly.`;
+      pendingSkillsContext = `\n\n## Pending Skills\n\nThe following auto-extracted skills are waiting for user confirmation:\n${names.join('\n')}\n\nTo confirm: Skill(action="confirm", skill_name="..."). To reject: Skill(action="reject", skill_name="...").`;
     }
   } catch {
     // 不阻塞主流程
