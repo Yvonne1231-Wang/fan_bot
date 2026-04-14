@@ -21,3 +21,9 @@ export {
   estimateTokens,
   type SummaryMessage,
 } from './summarizer.js';
+export {
+  SessionArchive,
+  type ArchiveSearchOptions,
+  type ArchiveResult,
+  type ArchiveStats,
+} from './archive.js';

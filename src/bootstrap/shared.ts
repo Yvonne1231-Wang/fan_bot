@@ -5,6 +5,7 @@ import type { MessageHandler } from '../transport/adapter.js';
 import type { SkillEntry } from '../skills/types.js';
 import { createSubAgentTools } from '../agent/index.js';
 import { getMemory, initMemory, LanceDBMemoryService } from '../memory/index.js';
+import { SessionArchive } from '../session/archive.js';
 import { registry, registerTool } from '../tools/registry.js';
 import { calculatorTool } from '../tools/calculator.js';
 import { readFileTool, writeFileTool, listDirTool } from '../tools/files.js';
@@ -87,6 +88,20 @@ export async function stopSkillsWatcher(): Promise<void> {
   }
 }
 
+
+// ─── Session Archive ─────────────────────────────────────────────────────────
+
+let globalArchive: SessionArchive | null = null;
+
+/**
+ * 获取或创建全局 SessionArchive 实例。
+ */
+export function getSessionArchive(): SessionArchive {
+  if (!globalArchive) {
+    globalArchive = new SessionArchive('.fan_bot/archive.db');
+  }
+  return globalArchive;
+}
 // ─── Initialization Helpers ──────────────────────────────────────────────────
 
 /**
@@ -137,6 +152,8 @@ export async function initMemoryWithLLM(llmClient: LLMClient): Promise<void> {
   // 向后兼容：如果是 LanceDB 实例，确保 LLM client 已设置
   if (memory instanceof LanceDBMemoryService) {
     memory.setLLMClient(llmClient);
+    // 注入 SessionArchive 以启用 FTS5 归档搜索
+    memory.setSessionArchive(getSessionArchive());
   }
 }
 
