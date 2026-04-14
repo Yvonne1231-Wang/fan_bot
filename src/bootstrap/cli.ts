@@ -35,7 +35,7 @@ export async function startCLIAdapter(
   });
   sessionManager.setLLMClient(llmClient);
 
-  initMemoryWithLLM(llmClient);
+  await initMemoryWithLLM(llmClient);
   const memory = getMemory();
   memory.setUserId(userId);
 

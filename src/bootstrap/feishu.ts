@@ -44,7 +44,7 @@ export async function startFeishuAdapter(): Promise<void> {
     maxContextMessages: 40,
   });
 
-  initMemoryWithLLM(llmClient);
+  await initMemoryWithLLM(llmClient);
   const memory = getMemory();
   memory.setUserId(userId);
   sessionManager.setLLMClient(llmClient);

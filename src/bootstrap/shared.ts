@@ -4,7 +4,7 @@ import type { LLMClient } from '../llm/types.js';
 import type { MessageHandler } from '../transport/adapter.js';
 import type { SkillEntry } from '../skills/types.js';
 import { createSubAgentTools } from '../agent/index.js';
-import { getMemory, LanceDBMemoryService } from '../memory/index.js';
+import { getMemory, initMemory, LanceDBMemoryService } from '../memory/index.js';
 import { registry, registerTool } from '../tools/registry.js';
 import { calculatorTool } from '../tools/calculator.js';
 import { readFileTool, writeFileTool, listDirTool } from '../tools/files.js';
@@ -128,10 +128,13 @@ export async function registerDefaultTools(
 }
 
 /**
- * 初始化记忆服务的 LLM 客户端
+ * 初始化记忆服务。
+ * 使用 initMemory() 通过工厂创建，支持可插拔后端。
+ * 向后兼容：默认使用 LanceDB。
  */
-export function initMemoryWithLLM(llmClient: LLMClient): void {
-  const memory = getMemory();
+export async function initMemoryWithLLM(llmClient: LLMClient): Promise<void> {
+  const memory = await initMemory(undefined, llmClient);
+  // 向后兼容：如果是 LanceDB 实例，确保 LLM client 已设置
   if (memory instanceof LanceDBMemoryService) {
     memory.setLLMClient(llmClient);
   }

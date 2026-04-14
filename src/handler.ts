@@ -14,7 +14,7 @@ import {
   extractMemories,
 } from './agent/index.js';
 import { registry } from './tools/registry.js';
-import { getMemory, LanceDBMemoryService } from './memory/index.js';
+import { getMemory } from './memory/index.js';
 import {
   runMediaUnderstanding,
   unifiedToMsgContext,
@@ -106,7 +106,7 @@ export function createMessageHandler(
     const sessionId = message.context.sessionId;
     const userId = message.context.userId;
 
-    if (userId && memory instanceof LanceDBMemoryService) {
+    if (userId) {
       memory.setUserId(userId);
     }
 

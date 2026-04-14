@@ -31,7 +31,7 @@ export async function startHTTPServer(): Promise<void> {
     maxContextMessages: 40,
   });
 
-  initMemoryWithLLM(llmClient);
+  await initMemoryWithLLM(llmClient);
   sessionManager.setLLMClient(llmClient);
 
   await registerDefaultTools(llmClient);
