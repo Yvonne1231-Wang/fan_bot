@@ -1,4 +1,6 @@
 import type { InstanceStatus, ResourceLimits } from '../types.js';
+import type { MemoryService } from '../../../memory/types.js';
+import type { ToolSchema } from '../../../llm/types.js';
 import { createDebug } from '../../../utils/debug.js';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs/promises';
@@ -18,9 +20,9 @@ export interface AgentInstance {
 
   /** 运行上下文 */
   context: {
-    memory: any;
+    memory: MemoryService | null;
     workspace: string;
-    tools: any[];
+    tools: ToolSchema[];
   };
 
   /** 实例状态 */
@@ -66,7 +68,7 @@ export class AgentInstanceManager {
       id,
       type,
       context: {
-        memory: {},
+        memory: null,
         workspace,
         tools: [],
       },
@@ -113,7 +115,7 @@ export class AgentInstanceManager {
     await this.cleanWorkspace(instance.context.workspace);
 
     instance.status = 'idle';
-    instance.context.memory = {};
+    instance.context.memory = null;
     instance.lastUsed = new Date();
 
     debug.info('Released instance: %s', instanceId);

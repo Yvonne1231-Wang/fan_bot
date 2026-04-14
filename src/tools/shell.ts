@@ -6,6 +6,12 @@ import { createDebug } from '../utils/debug.js';
 const execAsync = promisify(exec);
 const log = createDebug('tools:shell');
 
+/** child_process.exec rejection shape */
+interface ExecError extends Error {
+  code?: number;
+  stderr?: string;
+}
+
 const MAX_SHELL_OUTPUT_CHARS = 20000;
 
 export const shellTool: Tool = {
@@ -41,8 +47,9 @@ export const shellTool: Tool = {
           '\n\n[... output truncated due to size limit ...]';
       }
       return output || '(no output)';
-    } catch (error: any) {
-      return `Exit ${error.code ?? 1}: ${error.stderr || error.message}`;
+    } catch (error: unknown) {
+      const e = error as ExecError;
+      return `Exit ${e.code ?? 1}: ${e.stderr || e.message}`;
     }
   },
   riskLevel: 'high',
