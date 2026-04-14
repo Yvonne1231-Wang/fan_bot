@@ -32,7 +32,7 @@ import {
 
 const log = createDebug('handler');
 
-const DEFAULT_MAX_AGENT_ITERATIONS = 10;
+const DEFAULT_MAX_AGENT_ITERATIONS = 20;
 const BACKGROUND_TASK_MAX_RETRIES = 2;
 const BACKGROUND_TASK_RETRY_DELAY_MS = 1000;
 
