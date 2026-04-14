@@ -219,7 +219,7 @@ export class CronExecutor {
 
     if (!notificationHandler) {
       log.warn(`No notification handler for task ${taskId}, using console`);
-      log(`[Notification] ${payload.message}`);
+      log.info(`[Notification] ${payload.message}`);
       return `Notification sent to console: ${payload.message}`;
     }
 

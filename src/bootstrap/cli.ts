@@ -45,9 +45,9 @@ export async function startCLIAdapter(
   const initialMessages = await sessionManager.load(sid);
 
   if (initialMessages.length > 0) {
-    log(`Loaded session: ${sid}`);
-    log(`Messages: ${initialMessages.length}`);
-    log('');
+    log.info(`Loaded session: ${sid}`);
+    log.info(`Messages: ${initialMessages.length}`);
+    log.info('');
   }
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });

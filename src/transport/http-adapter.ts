@@ -114,7 +114,7 @@ export class HTTPChannelAdapter extends BaseChannelAdapter {
 
     const { port, host } = this.httpConfig;
     await this.server.listen({ port: port!, host: host! });
-    log(`HTTP server listening on ${host}:${port}`);
+    log.info(`HTTP server listening on ${host}:${port}`);
   }
 
   async send(
@@ -123,12 +123,12 @@ export class HTTPChannelAdapter extends BaseChannelAdapter {
   ): Promise<void> {
     // HTTP 模式下，响应通过 HTTP 请求直接返回，不需要主动发送
     // 这个方法用于其他场景（如 webhook 回调）
-    log(`[HTTP] Sending response to session ${context.sessionId}: ${response.id}`);
+    log.info(`[HTTP] Sending response to session ${context.sessionId}: ${response.id}`);
   }
 
   async sendStream(event: StreamEvent, context: MessageContext): Promise<void> {
     // HTTP 模式下的流式响应通过 SSE 实现
-    log(`[HTTP] Stream event for session ${context.sessionId}: ${event.type}`);
+    log.info(`[HTTP] Stream event for session ${context.sessionId}: ${event.type}`);
   }
 
   protected async doClose(): Promise<void> {

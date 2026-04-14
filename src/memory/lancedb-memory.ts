@@ -241,7 +241,7 @@ export class LanceDBMemoryService implements MemoryService {
 
     if (this.embeddingQueue) {
       this.embeddingQueue = this.embeddingQueue
-        .catch(() => {})
+        .catch((err) => { log.warn('Embedding queue error:', err); })
         .then(() => doEmbed());
     } else {
       this.embeddingQueue = doEmbed();

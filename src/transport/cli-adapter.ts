@@ -397,7 +397,7 @@ export class CLIChannelAdapter extends BaseChannelAdapter {
     if (sessionManager) {
       sessionManager.load(this.currentSessionId).then((messages) => {
         console.log(`Messages: ${messages.length}`);
-      });
+      }).catch(() => { /* status display is best-effort */ });
     }
   }
 
