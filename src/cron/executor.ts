@@ -28,6 +28,7 @@ import {
   isPathAllowed,
   SecurityError,
 } from './security.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -124,7 +125,7 @@ export class CronExecutor {
       };
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        getErrorMessage(error);
       log.error(`Cron task failed: ${task.name} - ${errorMessage}`);
 
       return {

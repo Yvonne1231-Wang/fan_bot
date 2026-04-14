@@ -4,6 +4,7 @@ import type { Tool, ToolRegistry as IToolRegistry } from './types.js';
 import type { ToolSchema } from '../llm/types.js';
 import { createDebug } from '../utils/debug.js';
 import { AsyncLocalStorage } from 'async_hooks';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('tools:registry');
 
@@ -85,7 +86,7 @@ class Registry implements IToolRegistry {
     try {
       return await tool.handler(input);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       throw new Error(`Tool '${name}' failed: ${message}`);
     }
   }

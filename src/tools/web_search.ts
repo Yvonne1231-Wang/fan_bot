@@ -3,6 +3,7 @@
 import { tavily } from '@tavily/core';
 import type { Tool } from './types.js';
 import { createDebug } from '../utils/debug.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('tools:web_search');
 
@@ -88,7 +89,7 @@ export const webSearchTool: Tool = {
 
       return `Found ${response.results.length} results:\n\n${formattedResults}`;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       log.error(`Search failed: ${message}`);
       throw new Error(`Web search failed: ${message}`);
     }

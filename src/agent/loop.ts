@@ -11,6 +11,7 @@ import type {
 import type { ToolRegistry } from '../tools/types.js';
 import type { MemoryService } from '../memory/types.js';
 import { createDebug } from '../utils/debug.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('agent:loop');
 
@@ -398,7 +399,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
               toolResults.push(toolResultBlock(toolUse.id, result));
             } catch (error) {
               const message =
-                error instanceof Error ? error.message : String(error);
+                getErrorMessage(error);
               log.error(`tool error: ${message}`);
               callbacks?.onToolEnd?.(toolUse.name, `Error: ${message}`, null);
               toolResults.push(
@@ -433,7 +434,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
       }
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = getErrorMessage(error);
     log.error(`Agent error: ${message}`);
     callbacks?.onError?.(message);
     throw error;

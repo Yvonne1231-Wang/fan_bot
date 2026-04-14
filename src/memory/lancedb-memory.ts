@@ -9,6 +9,7 @@ import type {
 import type { LLMClient } from '../llm/types.js';
 import { createDebug } from '../utils/debug.js';
 import { getToolContext } from '../tools/registry.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('memory:lancedb');
 
@@ -716,7 +717,7 @@ export class LanceDBMemoryService implements MemoryService {
       return scores;
     } catch (error) {
       log.warn(
-        `Jina rerank failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Jina rerank failed: ${getErrorMessage(error)}`,
       );
       return this.rerankWithLLMPrompt(query, candidates);
     }
@@ -785,7 +786,7 @@ Only output the scores, nothing else.`;
       return scores;
     } catch (error) {
       log.warn(
-        `LLM rerank failed: ${error instanceof Error ? error.message : String(error)}`,
+        `LLM rerank failed: ${getErrorMessage(error)}`,
       );
       const scores = new Map<number, number>();
       candidates.forEach((_, i) => scores.set(i, 1 - i * 0.1));
@@ -980,7 +981,7 @@ Only output the scores, nothing else.`;
       }
     } catch (error) {
       log.warn(
-        `BM25 search failed: ${error instanceof Error ? error.message : String(error)}`,
+        `BM25 search failed: ${getErrorMessage(error)}`,
       );
     }
 

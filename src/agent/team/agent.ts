@@ -13,6 +13,7 @@ import type { AgentResult } from '../loop.js';
 import { createDebug } from '../../utils/debug.js';
 import { getAgentPrompt, AGENT_PROMPTS } from './agent-prompts.js';
 import { getAgentToolRegistry } from './agent-tools.js';
+import { getErrorMessage } from '../../utils/error.js';
 
 const debug = createDebug('agent:team');
 
@@ -221,7 +222,7 @@ export class AgentTeam {
     } catch (error) {
       task.status = 'error';
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        getErrorMessage(error);
 
       return {
         taskId: task.id,

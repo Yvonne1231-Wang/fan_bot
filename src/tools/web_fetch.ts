@@ -6,6 +6,7 @@ import * as http from 'node:http';
 import * as https from 'node:https';
 import type { Tool } from './types.js';
 import { createDebug } from '../utils/debug.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('tools:web_fetch');
 
@@ -187,7 +188,7 @@ class HybridWebFetcher {
         };
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       log.warn(`Link analyze failed for ${url}: ${message}`);
     }
 
@@ -203,7 +204,7 @@ class HybridWebFetcher {
           confidence: 0.85,
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = getErrorMessage(error);
         log.warn(`Tavily extract failed for ${url}: ${message}`);
       }
     }
@@ -342,7 +343,7 @@ ${result.content}`;
 
       return output;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       log.error(`Fetch failed: ${message}`);
       throw new Error(`Web fetch failed: ${message}`);
     }

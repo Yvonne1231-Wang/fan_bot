@@ -18,6 +18,7 @@ import type {
   ContentBlock,
   MessageContext,
 } from './unified.js';
+import { getErrorMessage } from '../utils/error.js';
 
 /**
  * HTTP 适配器配置
@@ -219,7 +220,7 @@ export class HTTPChannelAdapter extends BaseChannelAdapter {
       return reply.send(httpResponse);
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        getErrorMessage(error);
       return reply.status(500).send({ error: errorMessage });
     }
   }
@@ -234,7 +235,7 @@ export class HTTPChannelAdapter extends BaseChannelAdapter {
       return reply.send(result);
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        getErrorMessage(error);
       return reply.status(500).send({ error: errorMessage });
     }
   }

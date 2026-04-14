@@ -6,6 +6,7 @@ import type {
   ToolResultBlock,
 } from '../llm/types.js';
 import { createDebug } from '../utils/debug.js';
+import { getErrorMessage } from '../utils/error.js';
 
 const log = createDebug('session:summarizer');
 
@@ -80,7 +81,7 @@ Output only the summary, nothing else.`;
     return summary;
   } catch (error) {
     log.error(`Summarization failed: ${error}`);
-    return `[Summary generation failed: ${error instanceof Error ? error.message : String(error)}]`;
+    return `[Summary generation failed: ${getErrorMessage(error)}]`;
   }
 }
 
