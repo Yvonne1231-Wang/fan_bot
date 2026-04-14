@@ -68,6 +68,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS archived_messages_fts USING fts5(
 );
 `;
 
+/**
+ * FTS5 查询中 ":" 会被解析为列限定符（如 "https:" -> 在 https 列中搜索），
+ * 其它特殊字符 (* ^ ( ) " NEAR) 也会影响语法。
+ * 将每个 token 用双引号包裹，确保按字面量匹配。
+ */
+function sanitizeFts5Query(raw: string): string {
+  const tokens = raw.match(/[\w\u4e00-\u9fff]+/g);
+  if (!tokens || tokens.length === 0) return '""';
+  return tokens.map((t) => `"${t}"`).join(' ');
+}
+
 const FTS_TRIGGERS_SQL = `
 CREATE TRIGGER IF NOT EXISTS archived_messages_ai AFTER INSERT ON archived_messages BEGIN
   INSERT INTO archived_messages_fts(rowid, content, tool_names)
@@ -159,9 +170,10 @@ export class SessionArchive {
     const conditions: string[] = [];
     const params: (string | number)[] = [];
 
-    // FTS5 MATCH 条件
+    // FTS5 MATCH 条件 — 转义特殊字符避免语法错误
+    const safeQuery = sanitizeFts5Query(query);
     conditions.push('f.archived_messages_fts MATCH ?');
-    params.push(query);
+    params.push(safeQuery);
 
     if (userId) {
       conditions.push('m.user_id = ?');

@@ -10,7 +10,7 @@ import type {
 } from './types.js';
 import { log } from '../utils/debug.js';
 
-const LLM_TIMEOUT_MS = 120000;
+const LLM_TIMEOUT_MS = 300000; // 5 min — 120s was too short for complex multi-tool conversations
 const MAX_CONTENT_BLOCKS_PER_MESSAGE = 100;
 
 // ─── Types ──────────────────────────────────────────────────────────────────

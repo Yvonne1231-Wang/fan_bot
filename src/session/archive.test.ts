@@ -127,6 +127,26 @@ describe('session/archive SessionArchive', () => {
     expect(results).toEqual([]);
   });
 
+  it('handles URLs in search queries without FTS5 column errors', () => {
+    archive.archive('sess-url', [
+      { role: 'user', content: [{ type: 'text', text: 'check https://example.com/page' }] },
+    ]);
+
+    // "https:" used to crash with "no such column: https"
+    const results = archive.search('https://example.com/page');
+    // Should not throw — may or may not find results depending on tokenization
+    expect(Array.isArray(results)).toBe(true);
+  });
+
+  it('handles special FTS5 operators in search queries', () => {
+    archive.archive('sess-special', [
+      { role: 'user', content: [{ type: 'text', text: 'NEAR AND OR NOT test' }] },
+    ]);
+
+    const results = archive.search('NEAR AND OR NOT test');
+    expect(Array.isArray(results)).toBe(true);
+  });
+
   // ─── getSession() ─────────────────────────────────────────────────────
 
   it('retrieves all messages for a session in order', () => {
