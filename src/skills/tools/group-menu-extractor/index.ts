@@ -19,17 +19,86 @@ interface MenuDish {
   stall: string;
   price?: string;
   tags?: string[];
+  meal?: string;
 }
+
+type MealType = 'breakfast' | 'lunch' | 'dinner';
 
 interface DailyMenuRecord {
   date: string;
-  meal: 'lunch' | 'dinner';
+  meal: MealType;
   dishes: MenuDish[];
   archivedAt: number;
 }
 
+/**
+ * Agent 可能直接写入的旧格式：{ lunch: { dishes: [...], ... }, dinner: { ... } }
+ * 需要兼容转换为标准的 DailyMenuRecord[]
+ */
+interface LegacyMealEntry {
+  dishes: MenuDish[];
+  restaurants?: unknown[];
+  special?: Record<string, unknown>;
+  source_chat?: string;
+  extracted_at?: string;
+}
+
+type LegacyDayEntry = Record<string, LegacyMealEntry>;
+
+/**
+ * 月度存档：标准格式是 { dateKey: DailyMenuRecord[] }
+ * 但实际可能存在旧格式 { dateKey: { meal: LegacyMealEntry } }
+ */
 interface MonthlyArchive {
-  [dateKey: string]: DailyMenuRecord[];
+  [dateKey: string]: DailyMenuRecord[] | LegacyDayEntry;
+}
+
+/**
+ * 判断一个日期条目是否是旧格式（dict of meal entries）
+ */
+function isLegacyDayEntry(
+  entry: DailyMenuRecord[] | LegacyDayEntry,
+): entry is LegacyDayEntry {
+  if (Array.isArray(entry)) return false;
+  // 旧格式的 key 是 meal 名称（lunch/dinner/breakfast），value 是包含 dishes 的对象
+  return Object.values(entry).some(
+    (v) =>
+      typeof v === 'object' &&
+      v !== null &&
+      'dishes' in v &&
+      Array.isArray((v as LegacyMealEntry).dishes),
+  );
+}
+
+/**
+ * 将任意格式的日期条目统一转为 DailyMenuRecord[]
+ */
+function normalizeDayEntry(
+  dateKey: string,
+  entry: DailyMenuRecord[] | LegacyDayEntry,
+): DailyMenuRecord[] {
+  if (Array.isArray(entry)) return entry;
+
+  if (!isLegacyDayEntry(entry)) return [];
+
+  const records: DailyMenuRecord[] = [];
+  for (const [mealKey, mealData] of Object.entries(entry)) {
+    if (
+      typeof mealData !== 'object' ||
+      mealData === null ||
+      !('dishes' in mealData)
+    ) {
+      continue;
+    }
+    const legacyEntry = mealData as LegacyMealEntry;
+    records.push({
+      date: dateKey,
+      meal: mealKey as MealType,
+      dishes: legacyEntry.dishes,
+      archivedAt: 0,
+    });
+  }
+  return records;
 }
 
 /**
@@ -71,7 +140,7 @@ async function saveMonthlyArchive(
  */
 async function getRecentDishNames(
   days: number,
-  meal?: 'lunch' | 'dinner',
+  meal?: MealType,
 ): Promise<Set<string>> {
   const names = new Set<string>();
   const today = new Date();
@@ -87,7 +156,8 @@ async function getRecentDishNames(
 
   for (const ym of monthsToCheck) {
     const archive = await loadMonthlyArchive(ym);
-    for (const records of Object.values(archive)) {
+    for (const [dateKey, rawEntry] of Object.entries(archive)) {
+      const records = normalizeDayEntry(dateKey, rawEntry);
       for (const record of records) {
         if (meal && record.meal !== meal) continue;
 
@@ -126,8 +196,8 @@ export const menuArchiveSaveTool: Tool = {
         },
         meal: {
           type: 'string',
-          enum: ['lunch', 'dinner'],
-          description: '餐次：lunch 或 dinner',
+          enum: ['breakfast', 'lunch', 'dinner'],
+          description: '餐次：breakfast、lunch 或 dinner',
         },
         dishes: {
           type: 'array',
@@ -166,7 +236,7 @@ export const menuArchiveSaveTool: Tool = {
     const date =
       (input.date as string) ||
       `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const meal = input.meal as 'lunch' | 'dinner';
+    const meal = input.meal as MealType;
     const dishes = input.dishes as MenuDish[];
 
     if (!dishes || dishes.length === 0) {
@@ -183,26 +253,35 @@ export const menuArchiveSaveTool: Tool = {
       archivedAt: Date.now(),
     };
 
-    if (!archive[date]) {
-      archive[date] = [];
+    // 兼容旧格式：如果当前日期条目是旧格式，先转换为标准数组格式
+    const existing = archive[date];
+    let dayRecords: DailyMenuRecord[];
+    if (existing) {
+      dayRecords = normalizeDayEntry(date, existing);
+    } else {
+      dayRecords = [];
     }
 
-    const existingIndex = archive[date].findIndex((r) => r.meal === meal);
+    const existingIndex = dayRecords.findIndex((r) => r.meal === meal);
     if (existingIndex >= 0) {
-      archive[date][existingIndex] = record;
+      dayRecords[existingIndex] = record;
       log.info(
         `Updated menu archive: ${date} ${meal} (${dishes.length} dishes)`,
       );
     } else {
-      archive[date].push(record);
+      dayRecords.push(record);
       log.info(
         `Created menu archive: ${date} ${meal} (${dishes.length} dishes)`,
       );
     }
 
+    // 统一写回标准数组格式
+    archive[date] = dayRecords;
     await saveMonthlyArchive(yearMonth, archive);
 
-    return `已存档 ${date} ${meal === 'lunch' ? '午餐' : '晚餐'} ${dishes.length} 道菜品。`;
+    const mealLabel =
+      meal === 'breakfast' ? '早餐' : meal === 'lunch' ? '午餐' : '晚餐';
+    return `已存档 ${date} ${mealLabel} ${dishes.length} 道菜品。`;
   },
 
   riskLevel: 'low',
@@ -229,7 +308,7 @@ export const menuArchiveDiffTool: Tool = {
         },
         meal: {
           type: 'string',
-          enum: ['lunch', 'dinner'],
+          enum: ['breakfast', 'lunch', 'dinner'],
           description: '餐次',
         },
         lookback_days: {
@@ -243,7 +322,7 @@ export const menuArchiveDiffTool: Tool = {
 
   handler: async (input: Record<string, unknown>): Promise<string> => {
     const todayDishes = input.dishes as string[];
-    const meal = input.meal as 'lunch' | 'dinner';
+    const meal = input.meal as MealType;
     const lookbackDays = Number(input.lookback_days) || 7;
 
     if (!todayDishes || todayDishes.length === 0) {
@@ -261,8 +340,11 @@ export const menuArchiveDiffTool: Tool = {
       }
     }
 
+    const mealLabel =
+      meal === 'breakfast' ? '早餐' : meal === 'lunch' ? '午餐' : '晚餐';
+
     if (recentNames.size === 0) {
-      return `暂无历史数据可供对比（过去 ${lookbackDays} 天无${meal === 'lunch' ? '午餐' : '晚餐'}记录）。所有 ${todayDishes.length} 道菜品均视为首次出现。`;
+      return `暂无历史数据可供对比（过去 ${lookbackDays} 天无${mealLabel}记录）。所有 ${todayDishes.length} 道菜品均视为首次出现。`;
     }
 
     const recentArray = [...recentNames];
@@ -278,7 +360,7 @@ export const menuArchiveDiffTool: Tool = {
 
     const lines: string[] = [];
     lines.push(
-      `对比范围：过去 ${lookbackDays} 天的${meal === 'lunch' ? '午餐' : '晚餐'}记录（历史菜品 ${recentNames.size} 道）`,
+      `对比范围：过去 ${lookbackDays} 天的${mealLabel}记录（历史菜品 ${recentNames.size} 道）`,
     );
 
     if (newDishes.length > 0) {
@@ -323,7 +405,7 @@ export const menuArchiveQueryTool: Tool = {
         },
         meal: {
           type: 'string',
-          enum: ['lunch', 'dinner'],
+          enum: ['breakfast', 'lunch', 'dinner'],
           description: '餐次过滤',
         },
         stall: {
@@ -344,7 +426,7 @@ export const menuArchiveQueryTool: Tool = {
 
   handler: async (input: Record<string, unknown>): Promise<string> => {
     const targetDate = input.date as string | undefined;
-    const meal = input.meal as 'lunch' | 'dinner' | undefined;
+    const meal = input.meal as MealType | undefined;
     const stallFilter = input.stall as string | undefined;
     const dishNameFilter = input.dish_name as string | undefined;
     const days = Number(input.days) || 7;
@@ -352,9 +434,14 @@ export const menuArchiveQueryTool: Tool = {
     if (targetDate) {
       const yearMonth = targetDate.slice(0, 7);
       const archive = await loadMonthlyArchive(yearMonth);
-      const records = archive[targetDate];
+      const rawEntry = archive[targetDate];
 
-      if (!records || records.length === 0) {
+      if (!rawEntry) {
+        return `${targetDate} 没有菜品存档记录。`;
+      }
+
+      const records = normalizeDayEntry(targetDate, rawEntry);
+      if (records.length === 0) {
         return `${targetDate} 没有菜品存档记录。`;
       }
 
@@ -376,7 +463,8 @@ export const menuArchiveQueryTool: Tool = {
 
     for (const ym of monthsToCheck) {
       const archive = await loadMonthlyArchive(ym);
-      for (const records of Object.values(archive)) {
+      for (const [dateKey, rawEntry] of Object.entries(archive)) {
+        const records = normalizeDayEntry(dateKey, rawEntry);
         for (const record of records) {
           const recordDate = new Date(record.date);
           const diffDays = Math.floor(
@@ -412,7 +500,12 @@ export const menuArchiveQueryTool: Tool = {
           if (dish.name.toLowerCase().includes(keyword)) {
             appearances.push({
               date: record.date,
-              meal: record.meal === 'lunch' ? '午餐' : '晚餐',
+              meal:
+                record.meal === 'breakfast'
+                  ? '早餐'
+                  : record.meal === 'lunch'
+                    ? '午餐'
+                    : '晚餐',
               stall: dish.stall,
               name: dish.name,
             });
@@ -465,8 +558,14 @@ function formatRecords(
 
     if (dishes.length === 0) continue;
 
+    const mealLabel =
+      record.meal === 'breakfast'
+        ? '早餐'
+        : record.meal === 'lunch'
+          ? '午餐'
+          : '晚餐';
     lines.push(
-      `\n📅 ${record.date} ${record.meal === 'lunch' ? '午餐' : '晚餐'}（${dishes.length} 道）`,
+      `\n📅 ${record.date} ${mealLabel}（${dishes.length} 道）`,
     );
 
     const byStall = new Map<string, MenuDish[]>();
@@ -502,3 +601,13 @@ export const tools: Tool[] = [
   menuArchiveDiffTool,
   menuArchiveQueryTool,
 ];
+
+/** @internal 仅供测试使用 */
+export const _testing = {
+  isLegacyDayEntry,
+  normalizeDayEntry,
+  loadMonthlyArchive,
+  saveMonthlyArchive,
+  getRecentDishNames,
+  ARCHIVE_DIR,
+};
