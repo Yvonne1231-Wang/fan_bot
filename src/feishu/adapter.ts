@@ -643,6 +643,18 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
     }
   }
 
+  /**
+   * 群聊场景下根据话题(thread)生成隔离的 sessionId
+   *
+   * - 有 rootId(话题回复) -> chatId:rootId
+   * - 无 rootId(独立消息) -> chatId:messageId, 每条消息独立 session
+   */
+  private buildGroupSessionId(event: FeishuMessageEvent): string {
+    const chatId = event.message.chatId;
+    const threadId = event.rootId || event.messageId;
+    return chatId + ':' + threadId;
+  }
+
   private async doProcessMessage(event: FeishuMessageEvent): Promise<void> {
     if (!this.messageHandler) {
       log.error('No message handler set');
@@ -657,7 +669,7 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
       userId: event.sender.senderId.openId,
       sessionId:
         event.chatType === 'group'
-          ? event.message.chatId
+          ? this.buildGroupSessionId(event)
           : event.sender.senderId.openId,
     };
 
@@ -817,7 +829,7 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
         channel: 'feishu',
         userId: event.sender.senderId.openId,
         sessionId: isGroup
-          ? event.message.chatId
+          ? this.buildGroupSessionId(event)
           : event.sender.senderId.openId,
         groupId: isGroup ? event.message.chatId : undefined,
         dmId: isGroup ? undefined : event.sender.senderId.openId,
