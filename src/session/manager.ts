@@ -16,6 +16,7 @@ import {
   findMaxContentPartsMessage,
 } from './summarizer.js';
 import { createDebug } from '../utils/debug.js';
+import { SessionArchive } from './archive.js';
 
 const log = createDebug('session:manager');
 
@@ -38,6 +39,7 @@ export class SessionManagerImpl implements SessionManager {
   private llmClient: LLMClient | null = null;
   private compressionConfig: CompressionConfig;
   private llmClientMissingWarned = false;
+  private archive: SessionArchive | null = null;
 
   constructor(options: SessionManagerOptions) {
     this.store = options.store;
@@ -52,6 +54,10 @@ export class SessionManagerImpl implements SessionManager {
 
   setCompressionConfig(config: CompressionConfig): void {
     this.compressionConfig = { ...this.compressionConfig, ...config };
+  }
+
+  setArchive(archive: SessionArchive): void {
+    this.archive = archive;
   }
 
   async load(id: string): Promise<Message[]> {
@@ -261,6 +267,17 @@ export class SessionManagerImpl implements SessionManager {
     log.info(
       `Compressing session: ${currentTokens} tokens > ${maxTokens} limit`,
     );
+
+    // 归档原始消息到 FTS5 索引（压缩前保存完整上下文）
+    if (this.archive) {
+      try {
+        const sessionId = `compress-${Date.now()}`;
+        this.archive.archive(sessionId, messages);
+        log.debug(`Archived ${messages.length} messages before compression`);
+      } catch (err) {
+        log.warn(`Failed to archive messages before compression: ${err}`);
+      }
+    }
 
     // 压缩前先拆分超限消息，避免压缩后仍然超限
     let workingMessages = this.splitOverflowingMessages(messages);

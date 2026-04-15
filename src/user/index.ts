@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
-import { createDebug } from './utils/debug.js';
+import { createDebug } from '../utils/debug.js';
 
 const log = createDebug('user');
 
@@ -58,3 +58,19 @@ export async function updateUserProfile(
 
   return updated;
 }
+
+// Re-export user profile modules
+export {
+  type UserPreferences,
+  type ProfileUpdate,
+  type ProjectEntry,
+  type DecisionEntry,
+  loadProfile,
+  saveProfile,
+  applyProfileUpdate,
+  getProfilePrompt,
+  formatProfileForPrompt,
+  mergeProfileUpdate,
+} from './profile.js';
+
+export { updateProfileFromConversation, extractProfileUpdates } from './profile-updater.js';

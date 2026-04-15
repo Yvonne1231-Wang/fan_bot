@@ -4,7 +4,7 @@ import type { LLMClient, AgentCallbacks } from './llm/types.js';
 import type { UnifiedMessage, UnifiedResponse } from './transport/unified.js';
 import type { MessageHandler } from './transport/adapter.js';
 import type { MediaConfig } from './media-understanding/types.js';
-import type { SkillEntry } from './skills/types.js';
+import type { SkillEntry, SkillCandidate } from './skills/types.js';
 import type { SessionManager } from './session/types.js';
 import {
   runAgent,
@@ -14,16 +14,25 @@ import {
   extractMemories,
 } from './agent/index.js';
 import { registry } from './tools/registry.js';
-import { getMemory, LanceDBMemoryService } from './memory/index.js';
+import { getMemory } from './memory/index.js';
 import {
   runMediaUnderstanding,
   unifiedToMsgContext,
 } from './media-understanding/index.js';
 import { createDebug } from './utils/debug.js';
+import { updateProfileFromConversation } from './user/profile-updater.js';
+import {
+  countToolUses,
+  hasExplicitSkillRequest,
+  evaluateForSkill,
+  extractSkill,
+  savePendingSkill,
+  cleanupExpiredPending,
+} from './skills/extractor.js';
 
 const log = createDebug('handler');
 
-const DEFAULT_MAX_AGENT_ITERATIONS = 10;
+const DEFAULT_MAX_AGENT_ITERATIONS = 20;
 const BACKGROUND_TASK_MAX_RETRIES = 2;
 const BACKGROUND_TASK_RETRY_DELAY_MS = 1000;
 
@@ -73,6 +82,8 @@ export interface MessageHandlerOptions {
   mediaConfig?: MediaConfig;
   getAbortSignal?: (chatId?: string) => AbortSignal | undefined;
   getSkillEntries: () => SkillEntry[];
+  /** 当后台检测到可提炼技能时的通知回调 */
+  onPendingSkillFound?: (candidate: SkillCandidate, messageId: string) => void;
 }
 
 /**
@@ -95,6 +106,7 @@ export function createMessageHandler(
     mediaConfig,
     getAbortSignal,
     getSkillEntries,
+    onPendingSkillFound,
   } = options;
   const memory = getMemory();
 
@@ -104,8 +116,12 @@ export function createMessageHandler(
   ): Promise<UnifiedResponse> => {
     const sessionId = message.context.sessionId;
     const userId = message.context.userId;
+    const sourceChatId =
+      message.context.groupId ||
+      (message.context.metadata.chatId as string | undefined) ||
+      message.context.dmId;
 
-    if (userId && memory instanceof LanceDBMemoryService) {
+    if (userId) {
       memory.setUserId(userId);
     }
 
@@ -116,12 +132,16 @@ export function createMessageHandler(
 
     const [messages, mediaResult] = await Promise.all([
       sessionManager.load(sessionId),
-      mediaConfig ? runMediaUnderstanding(unifiedToMsgContext(message), mediaConfig) : Promise.resolve(undefined),
+      mediaConfig
+        ? runMediaUnderstanding(unifiedToMsgContext(message), mediaConfig)
+        : Promise.resolve(undefined),
     ]);
 
     const channelInfo = [
       `Channel: ${message.context.channel}`,
-      message.context.groupId ? `Chat type: group (id: ${message.context.groupId})` : 'Chat type: direct message',
+      message.context.groupId
+        ? `Chat type: group (id: ${message.context.groupId})`
+        : 'Chat type: direct message',
       `User ID: ${userId}`,
     ].join('\n');
 
@@ -131,6 +151,7 @@ export function createMessageHandler(
       userQuery,
       skills: getSkillEntries(),
       extraContext: channelInfo,
+      userId,
     });
 
     let responseText = '';
@@ -212,6 +233,34 @@ export function createMessageHandler(
           }
         }
       });
+
+      runBackgroundTask('plan-profile-update', async () => {
+        if (userId) {
+          await updateProfileFromConversation(
+            currentMessages.slice(-8),
+            llmClient,
+            userId,
+          );
+        }
+      });
+
+      runBackgroundTask('plan-skill-evaluate', async () => {
+        const toolUseCount = countToolUses(currentMessages);
+        if (toolUseCount < 3 && !hasExplicitSkillRequest(userQuery)) return;
+
+        const candidate = await evaluateForSkill(currentMessages, llmClient);
+        if (!candidate) return;
+
+        const draft = await extractSkill(currentMessages, candidate, llmClient);
+        await savePendingSkill({
+          candidate,
+          draft,
+          createdAt: Date.now(),
+          sourceChatId,
+        });
+
+        onPendingSkillFound?.(candidate, message.id);
+      });
     } else {
       const result = await runAgent({
         prompt: effectivePrompt,
@@ -252,6 +301,39 @@ export function createMessageHandler(
             );
           }
         }
+      });
+
+      runBackgroundTask('profile-update', async () => {
+        if (userId && result.messages.length >= 2) {
+          await updateProfileFromConversation(
+            result.messages.slice(-8),
+            llmClient,
+            userId,
+          );
+        }
+      });
+
+      runBackgroundTask('skill-evaluate', async () => {
+        const toolUseCount = countToolUses(result.messages);
+        if (toolUseCount < 3 && !hasExplicitSkillRequest(userQuery)) return;
+
+        const candidate = await evaluateForSkill(result.messages, llmClient);
+        if (!candidate) return;
+
+        const draft = await extractSkill(result.messages, candidate, llmClient);
+        await savePendingSkill({
+          candidate,
+          draft,
+          createdAt: Date.now(),
+          sourceChatId,
+        });
+
+        onPendingSkillFound?.(candidate, message.id);
+      });
+
+      // 清理过期的待确认技能
+      runBackgroundTask('skill-cleanup', async () => {
+        await cleanupExpiredPending();
       });
     }
 

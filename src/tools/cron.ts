@@ -10,6 +10,7 @@ import type {
   AgentTaskPayload,
   NotificationTaskPayload,
   ShellTaskPayload,
+  SkillNotifyPayload,
 } from '../cron/types.js';
 import { createDebug } from '../utils/debug.js';
 import { getToolContext } from './registry.js';
@@ -111,7 +112,7 @@ export const cronCreateTool: Tool = {
         },
         type: {
           type: 'string',
-          enum: ['agent', 'notification', 'shell'],
+          enum: ['agent', 'notification', 'shell', 'skill-notify'],
           description: 'Type of task to execute',
         },
         delay_minutes: {
@@ -188,7 +189,11 @@ export const cronCreateTool: Tool = {
       throw new Error('Either cron_expression or delay_minutes is required');
     }
 
-    let payload: AgentTaskPayload | NotificationTaskPayload | ShellTaskPayload;
+    let payload:
+      | AgentTaskPayload
+      | NotificationTaskPayload
+      | ShellTaskPayload
+      | SkillNotifyPayload;
 
     switch (type) {
       case 'agent':
@@ -210,6 +215,14 @@ export const cronCreateTool: Tool = {
         payload = {
           command: String(input.command),
           timeout: input.timeout ? Number(input.timeout) : 60000,
+        };
+        break;
+      case 'skill-notify':
+        payload = {
+          chatId: input.notification_chat_id
+            ? String(input.notification_chat_id)
+            : undefined,
+          receiveIdType: 'chat_id',
         };
         break;
       default:

@@ -1,6 +1,6 @@
 // ─── Skills Loader ────────────────────────────────────────────────────────────
 
-import { readdir, readFile } from 'fs/promises';
+import { readdir, readFile, writeFile, mkdir } from 'fs/promises';
 import { join, resolve } from 'path';
 import { existsSync, watch } from 'fs';
 import { createDebug } from '../utils/debug.js';
@@ -9,6 +9,7 @@ import type {
   SkillsLoaderConfig,
   LoadedSkills,
   SkillEntry,
+  SkillStats,
 } from './types.js';
 
 const log = createDebug('skills:loader');
@@ -269,14 +270,18 @@ export class SkillsLoader {
         alwaysActive: metadata.alwaysActive === true,
         disableModelInvocation: metadata.disableModelInvocation === true,
         userInvocable: metadata.userInvocable !== false,
+        source: metadata.source === 'auto' ? 'auto' : 'manual',
+        version: typeof metadata.version === 'string'
+          ? parseInt(metadata.version, 10) || 1
+          : 1,
       },
       content,
       baseDir,
     };
   }
 
-  private parseFrontmatter(yaml: string): Record<string, string | boolean> {
-    const result: Record<string, string | boolean> = {};
+  private parseFrontmatter(yaml: string): Record<string, string | boolean | number> {
+    const result: Record<string, string | boolean | number> = {};
     const lines = yaml.split('\n');
 
     for (const line of lines) {
@@ -292,6 +297,8 @@ export class SkillsLoader {
         result[key] = true;
       } else if (value === 'false') {
         result[key] = false;
+      } else if (/^\d+$/.test(value)) {
+        result[key] = parseInt(value, 10);
       } else {
         result[key] = value.replace(/^["']|["']$/g, '');
       }
@@ -370,6 +377,48 @@ export function getSkillContent(
 ): string | null {
   const skill = skills.find((s) => s.metadata.name === skillName);
   return skill?.content ?? null;
+}
+
+
+// ─── Skill Stats Persistence ─────────────────────────────────────────────────
+// Stats 存在独立 JSON 文件中（.fan_bot/skill_stats/{name}.json），
+// 避免频繁修改 SKILL.md 本身。
+
+const STATS_DIR = join(process.cwd(), '.fan_bot', 'skill_stats');
+
+export async function loadSkillStats(skillName: string): Promise<SkillStats> {
+  const statsPath = join(STATS_DIR, `${skillName}.json`);
+  try {
+    const raw = await readFile(statsPath, 'utf-8');
+    return JSON.parse(raw) as SkillStats;
+  } catch {
+    return { usageCount: 0, successCount: 0, lastUsedAt: 0 };
+  }
+}
+
+export async function saveSkillStats(
+  skillName: string,
+  stats: SkillStats,
+): Promise<void> {
+  if (!existsSync(STATS_DIR)) {
+    await mkdir(STATS_DIR, { recursive: true });
+  }
+  const statsPath = join(STATS_DIR, `${skillName}.json`);
+  await writeFile(statsPath, JSON.stringify(stats, null, 2));
+}
+
+export async function recordSkillUsage(
+  skillName: string,
+  success: boolean,
+): Promise<void> {
+  const stats = await loadSkillStats(skillName);
+  stats.usageCount++;
+  if (success) stats.successCount++;
+  stats.lastUsedAt = Date.now();
+  await saveSkillStats(skillName, stats);
+  log.debug(
+    `Skill "${skillName}" usage recorded: ${stats.usageCount} total, ${stats.successCount} success`,
+  );
 }
 
 const globalLoader = new SkillsLoader();

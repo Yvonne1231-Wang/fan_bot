@@ -8,6 +8,7 @@ import type {
 } from './types.js';
 import type { LLMClient } from '../llm/types.js';
 import { createDebug } from '../utils/debug.js';
+import { SessionArchive } from '../session/archive.js';
 import { getToolContext } from '../tools/registry.js';
 import { getErrorMessage } from '../utils/error.js';
 
@@ -76,6 +77,7 @@ export class LanceDBMemoryService implements MemoryService {
   private dbPath: string;
   private initPromise: Promise<void> | null = null;
   private currentUserId: string = 'default';
+  private sessionArchive: SessionArchive | null = null;
 
   private accessTracker: Map<string, { count: number; lastAccess: number }> =
     new Map();
@@ -101,6 +103,10 @@ export class LanceDBMemoryService implements MemoryService {
 
   setLLMClient(client: LLMClient): void {
     this.llmClient = client;
+  }
+
+  setSessionArchive(archive: SessionArchive): void {
+    this.sessionArchive = archive;
   }
 
   /**
@@ -1207,10 +1213,32 @@ Only output the scores, nothing else.`;
 
     if (selected.length === 0) return null;
 
+    // 补充 FTS5 归档搜索结果
+    let archiveSection = '';
+    if (this.sessionArchive) {
+      try {
+        const userId = this.getUserId();
+        const archiveResults = this.sessionArchive.search(query, {
+          userId: userId !== 'default' ? userId : undefined,
+          maxAgeDays: 30,
+          limit: 5,
+        });
+        if (archiveResults.length > 0) {
+          const archiveLines = archiveResults
+            .map((r) => `- [session ${r.sessionId}] ${r.content.slice(0, 300)}`)
+            .join('\n');
+          archiveSection = '\n[ARCHIVE]\n' + archiveLines + '\n[/ARCHIVE]';
+        }
+      } catch (err) {
+        log.warn(`Archive search failed in buildContext: ${err}`);
+      }
+    }
+
     return (
       '[MEMORY]\n' +
       selected.map((r) => `- ${r.text}`).join('\n') +
-      '\n[/MEMORY]'
+      '\n[/MEMORY]' +
+      archiveSection
     );
   }
 
