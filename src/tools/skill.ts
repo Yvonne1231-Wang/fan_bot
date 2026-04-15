@@ -6,7 +6,9 @@ import {
   listPendingSkills,
   confirmPendingSkill,
   rejectPendingSkill,
+  improveSkill,
 } from '../skills/extractor.js';
+import type { SkillImprovementFeedback } from '../skills/types.js';
 import { createDebug } from '../utils/debug.js';
 
 const log = createDebug('tools:skill');
@@ -23,27 +25,38 @@ Actions:
 - **list_pending**: List auto-extracted skills waiting for user confirmation.
 - **confirm**: Install a pending skill. Requires skill_name.
 - **reject**: Discard a pending skill. Requires skill_name.
+- **improve**: Improve an existing skill based on feedback. Requires skill_name and feedback.
 
 Examples:
 - Skill(skill_name="lark-im") → activate skill
 - Skill(action="list_pending") → show pending skills
 - Skill(action="confirm", skill_name="deploy-workflow") → install pending skill
-- Skill(action="reject", skill_name="deploy-workflow") → discard pending skill`,
+- Skill(action="reject", skill_name="deploy-workflow") → discard pending skill
+- Skill(action="improve", skill_name="deploy-workflow", feedback="add rollback step", feedback_type="enhancement") → improve skill`,
     input_schema: {
       type: 'object',
       properties: {
         skill_name: {
           type: 'string',
-          description: 'The skill name (required for activate/confirm/reject)',
+          description: 'The skill name (required for activate/confirm/reject/improve)',
         },
         action: {
           type: 'string',
-          enum: ['activate', 'list_pending', 'confirm', 'reject'],
+          enum: ['activate', 'list_pending', 'confirm', 'reject', 'improve'],
           description: 'Action to perform. Default: "activate"',
         },
         context: {
           type: 'string',
           description: 'Optional: Additional context about what you are trying to achieve',
+        },
+        feedback: {
+          type: 'string',
+          description: 'Required for improve: Description of what to fix or enhance',
+        },
+        feedback_type: {
+          type: 'string',
+          enum: ['bug', 'enhancement', 'rewrite'],
+          description: 'Type of improvement. Default: "enhancement"',
         },
       },
       required: [],
@@ -98,6 +111,45 @@ Examples:
         return `Error: Pending skill "${skillName}" not found.`;
       } catch (error) {
         return `Error rejecting skill: ${error}`;
+      }
+    }
+
+    // ─── improve ───────────────────────────────────────────────────────
+    if (action === 'improve') {
+      if (!skillName) return 'Error: skill_name is required for improve action';
+      const feedbackText = String(input.feedback || '');
+      if (!feedbackText) return 'Error: feedback is required for improve action';
+
+      const feedbackType = String(input.feedback_type || 'enhancement') as
+        SkillImprovementFeedback['type'];
+      if (!['bug', 'enhancement', 'rewrite'].includes(feedbackType)) {
+        return 'Error: feedback_type must be one of: bug, enhancement, rewrite';
+      }
+
+      try {
+        const { createLLMClientFromEnv } = await import('../llm/index.js');
+        const llmClient = createLLMClientFromEnv();
+
+        const result = await improveSkill(
+          skillName,
+          {
+            type: feedbackType,
+            feedback: feedbackText,
+            conversationContext: input.context ? String(input.context) : undefined,
+          },
+          llmClient,
+        );
+
+        return [
+          `✓ Skill "${result.name}" improved: v${result.previousVersion} → v${result.newVersion}`,
+          `Change: ${result.changeSummary}`,
+          '',
+          `Previous version backed up to versions/SKILL.v${result.previousVersion}.md`,
+          'The updated skill is now active.',
+        ].join('\n');
+      } catch (error) {
+        log.error(`Skill improvement failed: ${error}`);
+        return `Error improving skill: ${error}`;
       }
     }
 
