@@ -4,7 +4,7 @@ import type { LLMClient, AgentCallbacks } from './llm/types.js';
 import type { UnifiedMessage, UnifiedResponse } from './transport/unified.js';
 import type { MessageHandler } from './transport/adapter.js';
 import type { MediaConfig } from './media-understanding/types.js';
-import type { SkillEntry } from './skills/types.js';
+import type { SkillEntry, SkillCandidate } from './skills/types.js';
 import type { SessionManager } from './session/types.js';
 import {
   runAgent,
@@ -82,6 +82,8 @@ export interface MessageHandlerOptions {
   mediaConfig?: MediaConfig;
   getAbortSignal?: (chatId?: string) => AbortSignal | undefined;
   getSkillEntries: () => SkillEntry[];
+  /** 当后台检测到可提炼技能时的通知回调 */
+  onPendingSkillFound?: (candidate: SkillCandidate, messageId: string) => void;
 }
 
 /**
@@ -104,6 +106,7 @@ export function createMessageHandler(
     mediaConfig,
     getAbortSignal,
     getSkillEntries,
+    onPendingSkillFound,
   } = options;
   const memory = getMemory();
 
@@ -113,6 +116,10 @@ export function createMessageHandler(
   ): Promise<UnifiedResponse> => {
     const sessionId = message.context.sessionId;
     const userId = message.context.userId;
+    const sourceChatId =
+      message.context.groupId ||
+      (message.context.metadata.chatId as string | undefined) ||
+      message.context.dmId;
 
     if (userId) {
       memory.setUserId(userId);
@@ -125,12 +132,16 @@ export function createMessageHandler(
 
     const [messages, mediaResult] = await Promise.all([
       sessionManager.load(sessionId),
-      mediaConfig ? runMediaUnderstanding(unifiedToMsgContext(message), mediaConfig) : Promise.resolve(undefined),
+      mediaConfig
+        ? runMediaUnderstanding(unifiedToMsgContext(message), mediaConfig)
+        : Promise.resolve(undefined),
     ]);
 
     const channelInfo = [
       `Channel: ${message.context.channel}`,
-      message.context.groupId ? `Chat type: group (id: ${message.context.groupId})` : 'Chat type: direct message',
+      message.context.groupId
+        ? `Chat type: group (id: ${message.context.groupId})`
+        : 'Chat type: direct message',
       `User ID: ${userId}`,
     ].join('\n');
 
@@ -245,7 +256,10 @@ export function createMessageHandler(
           candidate,
           draft,
           createdAt: Date.now(),
+          sourceChatId,
         });
+
+        onPendingSkillFound?.(candidate, message.id);
       });
     } else {
       const result = await runAgent({
@@ -311,7 +325,10 @@ export function createMessageHandler(
           candidate,
           draft,
           createdAt: Date.now(),
+          sourceChatId,
         });
+
+        onPendingSkillFound?.(candidate, message.id);
       });
 
       // 清理过期的待确认技能

@@ -267,6 +267,8 @@ export interface PendingSkill {
   candidate: SkillCandidate;
   draft: SkillDraft;
   createdAt: number;
+  /** 技能来源的 chatId，用于精准推送通知 */
+  sourceChatId?: string;
 }
 
 /**

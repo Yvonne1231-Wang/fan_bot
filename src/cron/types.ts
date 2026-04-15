@@ -2,7 +2,7 @@
  * Cron Task Types
  */
 
-export type CronTaskType = 'agent' | 'notification' | 'shell';
+export type CronTaskType = 'agent' | 'notification' | 'shell' | 'skill-notify';
 
 export interface AgentTaskPayload {
   prompt: string;
@@ -17,10 +17,17 @@ export interface ShellTaskPayload {
   timeout?: number;
 }
 
+export interface SkillNotifyPayload {
+  /** 推送通知的目标 chatId，不填则仅扫描不推送 */
+  chatId?: string;
+  receiveIdType?: 'chat_id' | 'open_id';
+}
+
 export type CronTaskPayload =
   | AgentTaskPayload
   | NotificationTaskPayload
-  | ShellTaskPayload;
+  | ShellTaskPayload
+  | SkillNotifyPayload;
 
 export interface CronTask {
   id: string;

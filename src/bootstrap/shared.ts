@@ -4,7 +4,11 @@ import type { LLMClient } from '../llm/types.js';
 import type { MessageHandler } from '../transport/adapter.js';
 import type { SkillEntry } from '../skills/types.js';
 import { createSubAgentTools } from '../agent/index.js';
-import { getMemory, initMemory, LanceDBMemoryService } from '../memory/index.js';
+import {
+  getMemory,
+  initMemory,
+  LanceDBMemoryService,
+} from '../memory/index.js';
 import { SessionArchive } from '../session/archive.js';
 import { registry, registerTool } from '../tools/registry.js';
 import { calculatorTool } from '../tools/calculator.js';
@@ -88,7 +92,6 @@ export async function stopSkillsWatcher(): Promise<void> {
   }
 }
 
-
 // ─── Session Archive ─────────────────────────────────────────────────────────
 
 let globalArchive: SessionArchive | null = null;
@@ -164,8 +167,10 @@ export function initCronScheduler(options: {
   llmClient: LLMClient;
   messageHandler: MessageHandler;
   resultSender?: (result: string, context: MessageContext) => Promise<void>;
+  defaultNotifyChatId?: string;
 }): CronScheduler {
-  const { llmClient, messageHandler, resultSender } = options;
+  const { llmClient, messageHandler, resultSender, defaultNotifyChatId } =
+    options;
 
   const store = new CronStore();
   const executor = new CronExecutor({
@@ -185,5 +190,54 @@ export function initCronScheduler(options: {
   registerTool(cronToggleTool);
   registerTool(cronRunNowTool);
 
+  ensureSkillNotifyTask(store, defaultNotifyChatId);
+
   return scheduler;
+}
+
+const SKILL_NOTIFY_TASK_NAME = 'skill-pending-notify';
+
+/**
+ * 确保 skill-notify 定时任务存在
+ *
+ * 每天早上 9 点扫描 pending skills 并推送飞书通知。
+ * 如果已有同名任务则跳过，避免重复创建。
+ */
+async function ensureSkillNotifyTask(
+  store: CronStore,
+  chatId?: string,
+): Promise<void> {
+  try {
+    await store.initialize();
+
+    const existing = await store.list();
+    const found = existing.some(
+      (t) => t.name === SKILL_NOTIFY_TASK_NAME && t.type === 'skill-notify',
+    );
+
+    if (found) {
+      log.debug('skill-notify cron task already exists, skipping');
+      return;
+    }
+
+    const notificationTarget = chatId
+      ? { chatId, receiveIdType: 'chat_id' as const }
+      : undefined;
+
+    await store.create({
+      name: SKILL_NOTIFY_TASK_NAME,
+      type: 'skill-notify',
+      cronExpression: '0 9 * * *',
+      payload: {
+        chatId,
+        receiveIdType: 'chat_id' as const,
+      },
+      enabled: true,
+      notificationTarget,
+    });
+
+    log.info('Auto-created skill-notify cron task (daily 9:00 AM)');
+  } catch (error) {
+    log.warn(`Failed to ensure skill-notify task: ${error}`);
+  }
 }

@@ -71,6 +71,29 @@ export async function startFeishuAdapter(): Promise<void> {
     getSkillEntries: getCachedSkillEntries,
     getAbortSignal: (chatId?: string) =>
       chatId ? adapter.getAbortSignal(chatId) : undefined,
+    onPendingSkillFound: (candidate, messageId) => {
+      const confidence = (candidate.confidence * 100).toFixed(0);
+      const text = `💡 检测到可复用的工作流模式「${candidate.name}」(置信度 ${confidence}%)\n\n${candidate.description}\n\n回复 "确认安装 ${candidate.name}" 保存为技能，或 "丢弃 ${candidate.name}" 忽略。`;
+      adapter.send(
+        {
+          id: `skill-notify-${Date.now()}`,
+          messageId: '',
+          content: [{ type: 'text', text }],
+          timestamp: Date.now(),
+          done: true,
+        },
+        {
+          channel: 'feishu',
+          userId: 'system',
+          sessionId: 'skill-notify',
+          metadata: {
+            originalMessageId: messageId,
+          },
+        },
+      ).catch((err) => {
+        log.error(`Failed to send skill candidate notification: ${err}`);
+      });
+    },
   });
 
   adapter.setMessageHandler(async (message, callbacks) => {
@@ -106,6 +129,7 @@ export async function startFeishuAdapter(): Promise<void> {
     llmClient,
     messageHandler,
     resultSender,
+    defaultNotifyChatId: process.env.SKILL_NOTIFY_CHAT_ID,
   });
   await cronScheduler.start();
 
