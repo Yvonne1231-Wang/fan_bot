@@ -28,7 +28,10 @@ import {
   extractSkill,
   savePendingSkill,
   cleanupExpiredPending,
+  extractUsedSkills,
+  evaluateForImprovement,
 } from './skills/extractor.js';
+import type { ImproveSuggestion } from './skills/extractor.js';
 
 const log = createDebug('handler');
 
@@ -84,6 +87,8 @@ export interface MessageHandlerOptions {
   getSkillEntries: () => SkillEntry[];
   /** 当后台检测到可提炼技能时的通知回调 */
   onPendingSkillFound?: (candidate: SkillCandidate, messageId: string) => void;
+  /** 当后台检测到已有技能需要改进时的通知回调 */
+  onSkillImproveSuggested?: (suggestion: ImproveSuggestion, messageId: string) => void;
 }
 
 /**
@@ -107,6 +112,7 @@ export function createMessageHandler(
     getAbortSignal,
     getSkillEntries,
     onPendingSkillFound,
+    onSkillImproveSuggested,
   } = options;
   const memory = getMemory();
 
@@ -259,7 +265,20 @@ export function createMessageHandler(
           sourceChatId,
         });
 
-        onPendingSkillFound?.(candidate, message.id);
+onPendingSkillFound?.(candidate, message.id);
+      });
+      runBackgroundTask('plan-skill-improve-evaluate', async () => {
+        const usedSkills = extractUsedSkills(currentMessages);
+        if (usedSkills.length === 0) return;
+
+        const suggestion = await evaluateForImprovement(
+          currentMessages,
+          usedSkills,
+          llmClient,
+        );
+        if (suggestion) {
+          onSkillImproveSuggested?.(suggestion, message.id);
+        }
       });
     } else {
       const result = await runAgent({
@@ -328,7 +347,20 @@ export function createMessageHandler(
           sourceChatId,
         });
 
-        onPendingSkillFound?.(candidate, message.id);
+onPendingSkillFound?.(candidate, message.id);
+      });
+      runBackgroundTask('skill-improve-evaluate', async () => {
+        const usedSkills = extractUsedSkills(result.messages);
+        if (usedSkills.length === 0) return;
+
+        const suggestion = await evaluateForImprovement(
+          result.messages,
+          usedSkills,
+          llmClient,
+        );
+        if (suggestion) {
+          onSkillImproveSuggested?.(suggestion, message.id);
+        }
       });
 
       // 清理过期的待确认技能

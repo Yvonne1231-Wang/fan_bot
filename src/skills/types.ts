@@ -83,3 +83,25 @@ export const DEFAULT_EXTRACTION_CONFIG: SkillExtractionConfig = {
   requireConfirmation: true,
   pendingExpireDays: 7,
 };
+
+// ─── Skill Improvement Types ────────────────────────────────────────────────
+
+export interface SkillImprovementFeedback {
+  /** 改进类型 */
+  type: 'bug' | 'enhancement' | 'rewrite';
+  /** 用户反馈或改进描述 */
+  feedback: string;
+  /** 相关对话摘要（可选，提供上下文给 LLM） */
+  conversationContext?: string;
+}
+
+export interface SkillImprovementResult {
+  /** 技能名称 */
+  name: string;
+  /** 旧版本号 */
+  previousVersion: number;
+  /** 新版本号 */
+  newVersion: number;
+  /** 改动摘要 */
+  changeSummary: string;
+}

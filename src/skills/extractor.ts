@@ -3,7 +3,7 @@
 // 从对话中自动识别可复用模式，提炼为技能。
 // 采用两阶段流程：evaluate（快速判断）→ extract（LLM 提炼）。
 
-import { readdir, readFile, writeFile, mkdir, unlink } from 'fs/promises';
+import { readdir, readFile, writeFile, mkdir, unlink, copyFile } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import type { Message, ContentBlock, LLMClient } from '../llm/types.js';
@@ -11,6 +11,8 @@ import type {
   SkillCandidate,
   SkillDraft,
   SkillExtractionConfig,
+  SkillImprovementFeedback,
+  SkillImprovementResult,
 } from './types.js';
 import { DEFAULT_EXTRACTION_CONFIG } from './types.js';
 import { getGlobalLoader } from './loader.js';
@@ -365,4 +367,287 @@ export async function cleanupExpiredPending(
     log.info(`Cleaned up ${cleaned} expired pending skills`);
   }
   return cleaned;
+}
+
+// ─── Skill Improvement ──────────────────────────────────────────────────────
+
+/**
+ * 解析 SKILL.md frontmatter 中的 version 字段。
+ */
+function parseSkillVersion(content: string): number {
+  const match = content.match(/^---\n[\s\S]*?version:\s*(\d+)[\s\S]*?\n---/);
+  return match ? parseInt(match[1], 10) : 1;
+}
+
+/**
+ * 更新 SKILL.md frontmatter 中的 version 字段。
+ */
+function bumpSkillVersion(content: string, newVersion: number): string {
+  return content.replace(
+    /^(---\n[\s\S]*?version:\s*)\d+([\s\S]*?\n---)/,
+    `$1${newVersion}$2`,
+  );
+}
+
+/**
+ * 基于用户反馈改进已安装的技能。
+ *
+ * 流程：读取现有 SKILL.md → 备份旧版本 → LLM 生成改进版 → 写入 → 重载。
+ */
+export async function improveSkill(
+  skillName: string,
+  feedback: SkillImprovementFeedback,
+  llmClient: LLMClient,
+): Promise<SkillImprovementResult> {
+  const loader = getGlobalLoader();
+  const skill = loader.getAllSkills().find((s) => s.metadata.name === skillName);
+
+  if (!skill) {
+    throw new Error(`Skill "${skillName}" not found`);
+  }
+
+  const currentContent = await readFile(join(skill.baseDir, 'SKILL.md'), 'utf-8');
+  const currentVersion = parseSkillVersion(currentContent);
+  const newVersion = currentVersion + 1;
+
+  // 备份当前版本到 versions/ 子目录，支持回滚
+  const versionsDir = join(skill.baseDir, 'versions');
+  if (!existsSync(versionsDir)) {
+    await mkdir(versionsDir, { recursive: true });
+  }
+  await copyFile(
+    join(skill.baseDir, 'SKILL.md'),
+    join(versionsDir, `SKILL.v${currentVersion}.md`),
+  );
+  log.info(`Backed up skill "${skillName}" v${currentVersion}`);
+
+  const improvePrompt = buildImprovePrompt(currentContent, feedback, newVersion);
+
+  const response = await llmClient.chat(
+    [{ role: 'user', content: [{ type: 'text', text: improvePrompt }] }],
+    [],
+  );
+
+  const newContent = response.content
+    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+    .map((b) => b.text)
+    .join('')
+    .trim();
+
+  // 确保版本号正确
+  const versionedContent = bumpSkillVersion(newContent, newVersion);
+
+  await writeFile(join(skill.baseDir, 'SKILL.md'), versionedContent);
+  await loader.loadAll();
+
+  log.info(`Skill "${skillName}" improved: v${currentVersion} → v${newVersion}`);
+
+  return {
+    name: skillName,
+    previousVersion: currentVersion,
+    newVersion,
+    changeSummary: `${feedback.type}: ${feedback.feedback}`,
+  };
+}
+
+function buildImprovePrompt(
+  currentContent: string,
+  feedback: SkillImprovementFeedback,
+  newVersion: number,
+): string {
+  const contextBlock = feedback.conversationContext
+    ? `\nConversation context:\n${feedback.conversationContext}`
+    : '';
+
+  return `You are improving an existing skill definition. Apply the user's feedback to produce an updated SKILL.md.
+
+## Current SKILL.md
+${currentContent}
+
+## Feedback
+Type: ${feedback.type}
+Description: ${feedback.feedback}${contextBlock}
+
+## Rules
+- Preserve the frontmatter format (---...---), update version to ${newVersion}
+- For "bug": fix the specific issue described
+- For "enhancement": add/improve the described capability while keeping existing functionality
+- For "rewrite": substantially restructure, but preserve the core purpose
+- Keep the same language as the original
+- Output ONLY the complete updated SKILL.md content, nothing else
+- Preserve tool names and actionable instructions
+- At the end, add a brief changelog entry under ## Changelog`;
+}
+
+// ─── Skill Improvement Evaluation ───────────────────────────────────────────
+
+/**
+ * 从对话消息中提取本次使用的已安装技能名称列表。
+ * 通过识别 Skill tool 的 activate 调用来判断。
+ */
+export function extractUsedSkills(messages: Message[]): string[] {
+  const names = new Set<string>();
+  for (const msg of messages) {
+    for (const block of msg.content) {
+      if (
+        block.type === 'tool_use' &&
+        block.name === 'Skill' &&
+        typeof block.input === 'object' &&
+        block.input !== null
+      ) {
+        const input = block.input as Record<string, unknown>;
+        const action = String(input.action || 'activate');
+        const skillName = String(input.skill_name || '');
+        if (action === 'activate' && skillName) {
+          names.add(skillName);
+        }
+      }
+    }
+  }
+  return Array.from(names);
+}
+
+/**
+ * 检测对话中是否存在技能执行异常信号。
+ *
+ * 异常信号：tool_result.is_error、用户纠正性语言、连续重试同一 tool。
+ */
+export function detectSkillIssueSignals(messages: Message[]): boolean {
+  let hasToolError = false;
+  let hasUserCorrection = false;
+
+  const correctionPatterns = [
+    /不对/,
+    /错了/,
+    /应该是/,
+    /不是这样/,
+    /重新/,
+    /wrong/i,
+    /incorrect/i,
+    /that's not/i,
+    /should be/i,
+    /try again/i,
+    /再试/,
+  ];
+
+  for (const msg of messages) {
+    for (const block of msg.content) {
+      if (block.type === 'tool_result' && block.is_error) {
+        hasToolError = true;
+      }
+      if (msg.role === 'user' && block.type === 'text') {
+        if (correctionPatterns.some((p) => p.test(block.text))) {
+          hasUserCorrection = true;
+        }
+      }
+    }
+  }
+
+  return hasToolError || hasUserCorrection;
+}
+
+export interface ImproveSuggestion {
+  skillName: string;
+  reason: string;
+  suggestedFeedback: string;
+  feedbackType: 'bug' | 'enhancement';
+}
+
+/**
+ * 评估对话中使用的技能是否需要改进。
+ *
+ * 仅在检测到异常信号时调用 LLM 做精确判断，避免不必要的 LLM 开销。
+ */
+export async function evaluateForImprovement(
+  messages: Message[],
+  usedSkills: string[],
+  llmClient: LLMClient,
+): Promise<ImproveSuggestion | null> {
+  if (usedSkills.length === 0) return null;
+  if (!detectSkillIssueSignals(messages)) return null;
+
+  const summary = extractConversationSummary(messages);
+
+  // 加载这些技能当前的 SKILL.md 内容摘要
+  const loader = getGlobalLoader();
+  const skillContents = usedSkills
+    .map((name) => {
+      const skill = loader.getAllSkills().find((s) => s.metadata.name === name);
+      if (!skill) return '';
+      // 只取前 500 字避免 prompt 过长
+      return `### ${name} (v${skill.metadata.version ?? 1})\n${skill.content.slice(0, 500)}`;
+    })
+    .filter(Boolean)
+    .join('\n\n');
+
+  const prompt = `Analyze this conversation where skills were used. Determine if any skill needs improvement.
+
+## Skills Used
+${skillContents}
+
+## Conversation
+${summary}
+
+Respond in JSON format only:
+{
+  "needsImprovement": boolean,
+  "skillName": "name of the skill that needs fixing",
+  "reason": "Why this skill needs improvement based on the conversation",
+  "suggestedFeedback": "Specific description of what to fix or enhance",
+  "feedbackType": "bug" | "enhancement"
+}
+
+Rules:
+- needsImprovement = true ONLY if the conversation clearly shows the skill's instructions led to errors, wrong results, or required manual correction
+- needsImprovement = false if the issue was user error, unrelated to the skill, or a one-off edge case
+- Be conservative: only suggest improvements for clear, repeatable issues`;
+
+  try {
+    const response = await llmClient.chat(
+      [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+      [],
+    );
+
+    const text = response.content
+      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      log.warn('Failed to parse improvement evaluation response');
+      return null;
+    }
+
+    const result = JSON.parse(jsonMatch[0]) as {
+      needsImprovement: boolean;
+      skillName: string;
+      reason: string;
+      suggestedFeedback: string;
+      feedbackType: 'bug' | 'enhancement';
+    };
+
+    if (!result.needsImprovement) {
+      log.debug('No skill improvement needed');
+      return null;
+    }
+
+    // 确认 skillName 在已使用列表中
+    if (!usedSkills.includes(result.skillName)) {
+      log.warn(`LLM suggested improving "${result.skillName}" but it was not used in this conversation`);
+      return null;
+    }
+
+    log.info(`Skill improvement suggested: "${result.skillName}" - ${result.reason}`);
+
+    return {
+      skillName: result.skillName,
+      reason: result.reason,
+      suggestedFeedback: result.suggestedFeedback,
+      feedbackType: result.feedbackType,
+    };
+  } catch (error) {
+    log.warn(`Skill improvement evaluation failed: ${getErrorMessage(error)}`);
+    return null;
+  }
 }
