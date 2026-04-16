@@ -112,6 +112,11 @@ class Registry implements IToolRegistry {
 
     return this.dispatch(name, input);
   }
+
+  isParallelSafe(name: string): boolean {
+    const tool = this.tools.get(name);
+    return tool?.parallelSafe === true;
+  }
 }
 
 // ─── Singleton Instance ───────────────────────────────────────────────────

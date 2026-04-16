@@ -14,6 +14,8 @@ export interface Tool {
   /** Execute the tool with given input */
   handler: (input: Record<string, unknown>) => Promise<string>;
   riskLevel?: 'low' | 'medium' | 'high';
+  /** Whether this tool is safe to run in parallel with other parallelSafe tools */
+  parallelSafe?: boolean;
   requiresConfirmation?: boolean;
 }
 
@@ -31,4 +33,5 @@ export interface ToolRegistry {
     input: Record<string, unknown>,
     confirmFn?: (preview: string) => Promise<boolean>,
   ): Promise<string>;
+  isParallelSafe(name: string): boolean;
 }

@@ -376,35 +376,86 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
             `response content types: ${response.content.map((c) => c.type).join(', ')}`,
           );
 
-          const toolResults: ContentBlock[] = [];
+          // 判断本轮所有 tool call 是否都可并行
+          const allParallelSafe = toolUseBlocks.every((t) =>
+            toolRegistry.isParallelSafe(t.name),
+          );
 
-          for (const toolUse of toolUseBlocks) {
-            checkAbort();
-            log.debug(`executing tool: ${toolUse.name}`);
-            callbacks?.onToolStart?.(
-              toolUse.name,
-              toolUse.input,
-              null,
-              toolUse.id,
+          let toolResults: ContentBlock[];
+
+          if (allParallelSafe && toolUseBlocks.length > 1) {
+            log.debug(
+              `parallel dispatch: ${toolUseBlocks.map((t) => t.name).join(', ')}`,
             );
-
-            try {
-              const result = await toolRegistry.dispatchWithConfirmation(
+            toolResults = await Promise.all(
+              toolUseBlocks.map(async (toolUse) => {
+                checkAbort();
+                log.debug(`executing tool (parallel): ${toolUse.name}`);
+                callbacks?.onToolStart?.(
+                  toolUse.name,
+                  toolUse.input,
+                  null,
+                  toolUse.id,
+                );
+                try {
+                  const result =
+                    await toolRegistry.dispatchWithConfirmation(
+                      toolUse.name,
+                      toolUse.input,
+                      options.confirmFn,
+                    );
+                  log.debug(`tool result: ${result.slice(0, 100)}`);
+                  callbacks?.onToolEnd?.(toolUse.name, result, null);
+                  return toolResultBlock(toolUse.id, result);
+                } catch (error) {
+                  const message = getErrorMessage(error);
+                  log.error(`tool error: ${message}`);
+                  callbacks?.onToolEnd?.(
+                    toolUse.name,
+                    `Error: ${message}`,
+                    null,
+                  );
+                  return toolResultBlock(
+                    toolUse.id,
+                    `Error: ${message}`,
+                    true,
+                  );
+                }
+              }),
+            );
+          } else {
+            toolResults = [];
+            for (const toolUse of toolUseBlocks) {
+              checkAbort();
+              log.debug(`executing tool (serial): ${toolUse.name}`);
+              callbacks?.onToolStart?.(
                 toolUse.name,
                 toolUse.input,
-                options.confirmFn,
+                null,
+                toolUse.id,
               );
-              log.debug(`tool result: ${result.slice(0, 100)}`);
-              callbacks?.onToolEnd?.(toolUse.name, result, null);
-              toolResults.push(toolResultBlock(toolUse.id, result));
-            } catch (error) {
-              const message =
-                getErrorMessage(error);
-              log.error(`tool error: ${message}`);
-              callbacks?.onToolEnd?.(toolUse.name, `Error: ${message}`, null);
-              toolResults.push(
-                toolResultBlock(toolUse.id, `Error: ${message}`, true),
-              );
+              try {
+                const result =
+                  await toolRegistry.dispatchWithConfirmation(
+                    toolUse.name,
+                    toolUse.input,
+                    options.confirmFn,
+                  );
+                log.debug(`tool result: ${result.slice(0, 100)}`);
+                callbacks?.onToolEnd?.(toolUse.name, result, null);
+                toolResults.push(toolResultBlock(toolUse.id, result));
+              } catch (error) {
+                const message = getErrorMessage(error);
+                log.error(`tool error: ${message}`);
+                callbacks?.onToolEnd?.(
+                  toolUse.name,
+                  `Error: ${message}`,
+                  null,
+                );
+                toolResults.push(
+                  toolResultBlock(toolUse.id, `Error: ${message}`, true),
+                );
+              }
             }
           }
 

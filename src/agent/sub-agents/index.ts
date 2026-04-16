@@ -99,6 +99,7 @@ function createSubAgentTool(
 
   return {
     schema,
+    parallelSafe: config.type === 'vision',
 
     handler: async (input: Record<string, unknown>): Promise<string> => {
       const task = String(input.task);

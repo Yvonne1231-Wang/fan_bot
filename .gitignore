@@ -5,6 +5,7 @@ node_modules/
 dist/
 
 # Environment
+.claude/
 .env
 .env.local
 .env.*.local

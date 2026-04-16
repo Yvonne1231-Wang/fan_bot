@@ -564,9 +564,7 @@ function formatRecords(
         : record.meal === 'lunch'
           ? '午餐'
           : '晚餐';
-    lines.push(
-      `\n📅 ${record.date} ${mealLabel}（${dishes.length} 道）`,
-    );
+    lines.push(`\n📅 ${record.date} ${mealLabel}（${dishes.length} 道）`);
 
     const byStall = new Map<string, MenuDish[]>();
     for (const dish of dishes) {
@@ -595,12 +593,11 @@ function formatRecords(
 
 /**
  * 此 Skill 提供的所有工具
+ *
+ * 已迁移到 scripts/archive_menu.mjs 脚本，tool 不再注册。
+ * SKILL.md 中已改为脚本调用方式，避免 agent 混用两种方式。
  */
-export const tools: Tool[] = [
-  menuArchiveSaveTool,
-  menuArchiveDiffTool,
-  menuArchiveQueryTool,
-];
+export const tools: Tool[] = [];
 
 /** @internal 仅供测试使用 */
 export const _testing = {

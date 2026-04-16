@@ -15,6 +15,7 @@ export interface SubRegistry {
     input: Record<string, unknown>,
     confirmFn?: (preview: string) => Promise<boolean>,
   ) => Promise<string>;
+  isParallelSafe: (name: string) => boolean;
 }
 
 export function buildSubRegistry(
@@ -48,6 +49,11 @@ export function buildSubRegistry(
         throw new Error(`Tool '${name}' is not available in this sub-agent`);
       }
       return baseRegistry.dispatchWithConfirmation(name, input, confirmFn);
+    },
+
+    isParallelSafe: (name: string) => {
+      if (!allowedTools.includes(name)) return false;
+      return baseRegistry.isParallelSafe(name);
     },
   };
 }

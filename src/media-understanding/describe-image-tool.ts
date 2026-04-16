@@ -25,14 +25,22 @@ export const describeImageTool: Tool = {
           type: 'number',
           description: 'Maximum characters for the description (default: 500)',
         },
+        prompt: {
+          type: 'string',
+          description:
+            'Custom prompt for the vision model. Use this to ask specific questions about the image instead of getting a generic description.',
+        },
       },
       required: ['path'],
     },
   },
 
+  parallelSafe: true,
+
   handler: async (input: Record<string, unknown>): Promise<string> => {
     const path = String(input.path);
     const maxChars = Number(input.maxChars) || 500;
+    const customPrompt = input.prompt ? String(input.prompt) : '';
 
     try {
       const imageData = await readFile(path);
@@ -54,7 +62,8 @@ export const describeImageTool: Tool = {
               },
               {
                 type: 'text',
-                text: `Describe this image concisely in <= ${maxChars} characters. Focus on: content type, key subjects, any visible text, overall context.`,
+                text: customPrompt
+                  || `Describe this image concisely in <= ${maxChars} characters. Focus on: content type, key subjects, any visible text, overall context.`,
               },
             ],
           },

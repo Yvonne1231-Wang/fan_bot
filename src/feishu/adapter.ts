@@ -89,6 +89,12 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
     'abort',
   ];
 
+  /** 新对话指令关键词 */
+  private static readonly NEW_SESSION_KEYWORDS = ['/new', '新对话', '新会话'];
+
+  /** 私聊 session 隔离：openId -> session suffix */
+  private p2pSessionSuffixes = new Map<string, string>();
+
   constructor(config: FeishuAdapterConfig) {
     super({ ...config, channelType: 'feishu' });
     this.feishuConfig = config;
@@ -114,6 +120,36 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
         normalizedText.startsWith(keyword.toLowerCase() + ' ') ||
         normalizedText.startsWith('/' + keyword.toLowerCase().replace('/', '')),
     );
+  }
+
+  /**
+   * 检测消息是否是新对话指令
+   */
+  private isNewSessionCommand(text: string): boolean {
+    const normalizedText = text.trim().toLowerCase();
+    return FeishuChannelAdapter.NEW_SESSION_KEYWORDS.some(
+      (keyword) =>
+        normalizedText === keyword.toLowerCase() ||
+        normalizedText.startsWith(keyword.toLowerCase() + ' '),
+    );
+  }
+
+  /**
+   * 构建私聊 sessionId，格式为 openId:suffix
+   *
+   * suffix 在 /new 时重置，实现私聊 session 隔离
+   */
+  private buildP2PSessionId(openId: string): string {
+    const suffix = this.p2pSessionSuffixes.get(openId) ?? 'default';
+    return openId + ':' + suffix;
+  }
+
+  /**
+   * 重置私聊用户的 session suffix，使其进入新对话
+   */
+  private resetP2PSession(openId: string): void {
+    this.p2pSessionSuffixes.set(openId, String(Date.now()));
+    log.info(`P2P session reset for user: ${openId}`);
   }
 
   /**
@@ -611,6 +647,16 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
       return;
     }
 
+    if (this.isNewSessionCommand(messageText) && event.chatType === 'p2p') {
+      this.resetP2PSession(event.sender.senderId.openId);
+      await this.feishuService.replyMessage(
+        event.messageId,
+        'text',
+        JSON.stringify({ text: '✅ 已开启新对话' }),
+      );
+      return;
+    }
+
     const enqueued = await this.enqueueFeishuChatTask(
       accountId,
       chatId,
@@ -670,7 +716,7 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
       sessionId:
         event.chatType === 'group'
           ? this.buildGroupSessionId(event)
-          : event.sender.senderId.openId,
+          : this.buildP2PSessionId(event.sender.senderId.openId),
     };
 
     await runWithContext(ctx, async () => {
@@ -779,8 +825,7 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
           );
         }
       } catch (error) {
-        const errorMessage =
-          getErrorMessage(error);
+        const errorMessage = getErrorMessage(error);
 
         if (abortController.signal.aborted) {
           log.info(`Task aborted for chat: ${chatId}`);
@@ -830,7 +875,7 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
         userId: event.sender.senderId.openId,
         sessionId: isGroup
           ? this.buildGroupSessionId(event)
-          : event.sender.senderId.openId,
+          : this.buildP2PSessionId(event.sender.senderId.openId),
         groupId: isGroup ? event.message.chatId : undefined,
         dmId: isGroup ? undefined : event.sender.senderId.openId,
         originalMessageId: event.messageId,

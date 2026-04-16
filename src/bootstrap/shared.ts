@@ -3,6 +3,7 @@
 import type { LLMClient } from '../llm/types.js';
 import type { MessageHandler } from '../transport/adapter.js';
 import type { SkillEntry } from '../skills/types.js';
+import type { Tool, ToolRegistry } from '../tools/types.js';
 import { createSubAgentTools } from '../agent/index.js';
 import {
   getMemory,
@@ -108,9 +109,51 @@ export function getSessionArchive(): SessionArchive {
 // ─── Initialization Helpers ──────────────────────────────────────────────────
 
 /**
+ * 为 sub-agent 构建增强版工具注册表，
+ * 在全局 registry 基础上注入主 Agent 不应直接访问的工具。
+ */
+function augmentRegistry(base: ToolRegistry, extraTools: Tool[]): ToolRegistry {
+  const extraMap = new Map(extraTools.map((t) => [t.schema.name, t]));
+
+  return {
+    register: (tool: Tool) => base.register(tool),
+    getSchemas: () => [
+      ...base.getSchemas(),
+      ...extraTools.map((t) => t.schema),
+    ],
+    dispatch: (name, input) => {
+      const extra = extraMap.get(name);
+      if (extra) return extra.handler(input);
+      return base.dispatch(name, input);
+    },
+    dispatchWithConfirmation: (name, input, confirmFn) => {
+      const extra = extraMap.get(name);
+      if (extra) {
+        if (extra.requiresConfirmation && confirmFn) {
+          const preview = `${name}(${JSON.stringify(input)})`;
+          return confirmFn(preview).then((approved) =>
+            approved
+              ? extra.handler(input)
+              : 'Tool execution cancelled by user.',
+          );
+        }
+        return extra.handler(input);
+      }
+      return base.dispatchWithConfirmation(name, input, confirmFn);
+    },
+    isParallelSafe: (name) => {
+      const extra = extraMap.get(name);
+      if (extra) return extra.parallelSafe === true;
+      return base.isParallelSafe(name);
+    },
+  };
+}
+
+/**
  * 注册所有默认工具
  *
- * 主 Agent 只保留基础工具，复杂任务通过 sub-agent 处理
+ * 主 Agent 只保留基础工具，图片分析通过 vision sub-agent 处理，
+ * describe_image 仅注入到 sub-agent 的工具注册表中。
  */
 export async function registerDefaultTools(
   llmClient: LLMClient,
@@ -126,7 +169,6 @@ export async function registerDefaultTools(
   registerTool(memoryListTool);
   registerTool(memoryDeleteTool);
   registerTool(memorySearchTool);
-  registerTool(describeImageTool);
 
   const skillTools = await loadSkillTools();
   for (const tool of skillTools) {
@@ -135,7 +177,7 @@ export async function registerDefaultTools(
 
   const subAgentCtx = {
     llmClient,
-    baseRegistry: registry,
+    baseRegistry: augmentRegistry(registry, [describeImageTool]),
   };
 
   const subAgentTools = createSubAgentTools(subAgentCtx);

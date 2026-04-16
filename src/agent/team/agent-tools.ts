@@ -15,6 +15,10 @@ import { calculatorTool } from '../../tools/calculator.js';
  * 简单的工具注册表实现
  */
 class SimpleToolRegistry implements ToolRegistry {
+  isParallelSafe(): boolean {
+    return false;
+  }
+
   private tools = new Map<string, Tool>();
 
   register(tool: Tool): void {

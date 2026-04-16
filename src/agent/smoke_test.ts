@@ -75,6 +75,7 @@ async function testSimpleConversation(
         _name: string,
         _input: Record<string, unknown>,
       ) => '',
+      isParallelSafe: () => false,
       register: function (tool: Tool): void {
         throw new Error('Function not implemented.');
       },
@@ -146,6 +147,7 @@ async function testToolUsage(
       ) => {
         return '';
       },
+      isParallelSafe: () => false,
       register: function (tool: Tool): void {
         throw new Error('Function not implemented.');
       },
@@ -186,6 +188,7 @@ async function testMultiTurnConversation(
         _name: string,
         _input: Record<string, unknown>,
       ) => '',
+      isParallelSafe: () => false,
       register: function (tool: Tool): void {
         throw new Error('Function not implemented.');
       },
@@ -207,6 +210,7 @@ async function testMultiTurnConversation(
         _name: string,
         _input: Record<string, unknown>,
       ) => '',
+      isParallelSafe: () => false,
       register: function (tool: Tool): void {
         throw new Error('Function not implemented.');
       },

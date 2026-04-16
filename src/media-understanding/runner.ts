@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { statSync } from 'fs';
+import { createReadStream, statSync } from 'fs';
 import { readFile } from 'fs/promises';
 import type {
   MsgContext,
@@ -157,8 +157,13 @@ async function processAttachment(
 }
 
 async function computeContentHash(path: string): Promise<string> {
-  const content = await readFile(path);
-  return createHash('sha256').update(content).digest('hex').slice(0, 16);
+  // 流式 hash，避免大文件全量加载到内存
+  const hash = createHash('sha256');
+  const stream = createReadStream(path);
+  for await (const chunk of stream) {
+    hash.update(chunk);
+  }
+  return hash.digest('hex').slice(0, 16);
 }
 
 function selectAttachments(
