@@ -376,11 +376,17 @@ export class FeishuService {
    * 将 markdown 文本包装为飞书 interactive 卡片格式，
    * 卡片内的 markdown 元素支持完整的 markdown 渲染，
    * 比 text 消息格式有更好的阅读体验。
+   *
+   * 飞书卡片 JSON 2.0 规范要求 elements 放在 body 下，
+   * 顶层 elements 是 1.0 写法，会导致 400 错误。
    */
   buildMarkdownCard(title: string, markdownContent: string): string {
     const card = {
       schema: '2.0',
-      config: { wide_screen_mode: true },
+      config: {
+        wide_screen_mode: true,
+        update_multi: true,
+      },
       header: {
         template: 'blue',
         title: {
@@ -388,12 +394,14 @@ export class FeishuService {
           content: title,
         },
       },
-      elements: [
-        {
-          tag: 'markdown',
-          content: markdownContent,
-        },
-      ],
+      body: {
+        elements: [
+          {
+            tag: 'markdown',
+            content: markdownContent,
+          },
+        ],
+      },
     };
     return JSON.stringify(card);
   }

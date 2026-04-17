@@ -379,18 +379,45 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
         markdownContent,
       );
 
-      if (originalMessageId) {
-        await this.feishuService.replyMessage(
-          originalMessageId,
-          'interactive',
-          cardJson,
-        );
-      } else {
-        await this.feishuService.sendCardMessage(
-          receiveId,
-          receiveIdType,
-          cardJson,
-        );
+      try {
+        if (originalMessageId) {
+          await this.feishuService.replyMessage(
+            originalMessageId,
+            'interactive',
+            cardJson,
+          );
+        } else {
+          await this.feishuService.sendCardMessage(
+            receiveId,
+            receiveIdType,
+            cardJson,
+          );
+        }
+      } catch (cardError) {
+        const cardErrorMsg =
+          cardError instanceof Error ? cardError.message : String(cardError);
+        log.warn(`Card send failed, falling back to text: ${cardErrorMsg}`);
+
+        const textContent = this.extractTextContent(response);
+        try {
+          if (originalMessageId) {
+            await this.feishuService.replyMessage(
+              originalMessageId,
+              'text',
+              JSON.stringify({ text: textContent }),
+            );
+          } else {
+            await this.feishuService.sendTextMessage(
+              receiveId,
+              receiveIdType,
+              textContent,
+            );
+          }
+        } catch (textError) {
+          const textErrorMsg =
+            textError instanceof Error ? textError.message : String(textError);
+          log.error(`Text fallback also failed: ${textErrorMsg}`);
+        }
       }
     } else {
       const textContent = this.extractTextContent(response);
