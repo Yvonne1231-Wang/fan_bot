@@ -80,7 +80,7 @@ export async function startHTTPServer(): Promise<void> {
       {
         id: `cron-${Date.now()}`,
         messageId: '',
-        content: [{ type: 'text', text: result }],
+        content: [{ type: 'markdown' as const, text: result }],
         timestamp: Date.now(),
         done: true,
       },

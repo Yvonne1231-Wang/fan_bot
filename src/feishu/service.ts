@@ -370,6 +370,34 @@ export class FeishuService {
     }
   }
 
+  /**
+   * 构建 markdown 卡片消息 JSON
+   *
+   * 将 markdown 文本包装为飞书 interactive 卡片格式，
+   * 卡片内的 markdown 元素支持完整的 markdown 渲染，
+   * 比 text 消息格式有更好的阅读体验。
+   */
+  buildMarkdownCard(title: string, markdownContent: string): string {
+    const card = {
+      schema: '2.0',
+      config: { wide_screen_mode: true },
+      header: {
+        template: 'blue',
+        title: {
+          tag: 'plain_text',
+          content: title,
+        },
+      },
+      elements: [
+        {
+          tag: 'markdown',
+          content: markdownContent,
+        },
+      ],
+    };
+    return JSON.stringify(card);
+  }
+
   buildCard(options: CardBuilderOptions, elements: CardElement[]): string {
     const card = {
       type: 'template',

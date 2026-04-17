@@ -12,6 +12,7 @@ import type {
   StreamEvent,
   ContentBlock,
   MessageContext,
+  TextContentBlock,
   ImageContentBlock,
   FileContentBlock,
 } from '../transport/unified.js';
@@ -318,6 +319,40 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
     return true;
   }
 
+  /**
+   * 判断响应内容是否包含富文本（markdown/card），
+   * 需要使用卡片格式发送以保留渲染效果。
+   */
+  private shouldSendAsCard(response: UnifiedResponse): boolean {
+    return response.content.some(
+      (block) => block.type === 'markdown' || block.type === 'card',
+    );
+  }
+
+  /**
+   * 从响应中提取 markdown 内容，合并为卡片可渲染的文本
+   */
+  private extractMarkdownContent(response: UnifiedResponse): string {
+    const parts: string[] = [];
+    for (const block of response.content) {
+      switch (block.type) {
+        case 'text':
+          parts.push(block.text);
+          break;
+        case 'markdown':
+          parts.push(block.text);
+          break;
+        case 'card':
+          if (block.title) {
+            parts.push(`### ${block.title}`);
+          }
+          parts.push(block.content);
+          break;
+      }
+    }
+    return parts.join('\n\n');
+  }
+
   async send(
     response: UnifiedResponse,
     context: MessageContext,
@@ -330,23 +365,77 @@ export class FeishuChannelAdapter extends BaseChannelAdapter {
       log.error('No chatId in context');
       return;
     }
-    const textContent = this.extractTextContent(response);
+
+    const useCard = this.shouldSendAsCard(response);
     log.info(
-      `[cron-send] receiveId=${receiveId} receiveIdType=${receiveIdType} hasOriginalMsgId=${!!originalMessageId}`,
+      `[send] receiveId=${receiveId} receiveIdType=${receiveIdType} hasOriginalMsgId=${!!originalMessageId} useCard=${useCard}`,
     );
-    if (originalMessageId) {
-      await this.feishuService.replyMessage(
-        originalMessageId,
-        'text',
-        JSON.stringify({ text: textContent }),
+
+    if (useCard) {
+      const markdownContent = this.extractMarkdownContent(response);
+      const cardTitle = this.extractCardTitle(response);
+      const cardJson = this.feishuService.buildMarkdownCard(
+        cardTitle,
+        markdownContent,
       );
+
+      if (originalMessageId) {
+        await this.feishuService.replyMessage(
+          originalMessageId,
+          'interactive',
+          cardJson,
+        );
+      } else {
+        await this.feishuService.sendCardMessage(
+          receiveId,
+          receiveIdType,
+          cardJson,
+        );
+      }
     } else {
-      await this.feishuService.sendTextMessage(
-        receiveId,
-        receiveIdType,
-        textContent,
-      );
+      const textContent = this.extractTextContent(response);
+      if (originalMessageId) {
+        await this.feishuService.replyMessage(
+          originalMessageId,
+          'text',
+          JSON.stringify({ text: textContent }),
+        );
+      } else {
+        await this.feishuService.sendTextMessage(
+          receiveId,
+          receiveIdType,
+          textContent,
+        );
+      }
     }
+  }
+
+  /**
+   * 从响应内容中提取卡片标题
+   *
+   * 优先使用 card 块的 title，其次取第一行文本作为标题
+   */
+  private extractCardTitle(response: UnifiedResponse): string {
+    for (const block of response.content) {
+      if (block.type === 'card' && block.title) {
+        return block.title;
+      }
+    }
+    const firstText = response.content.find(
+      (b) => b.type === 'text' || b.type === 'markdown',
+    );
+    if (firstText) {
+      const text =
+        firstText.type === 'text'
+          ? (firstText as TextContentBlock).text
+          : (firstText as { type: 'markdown'; text: string }).text;
+      const firstLine = text.split('\n')[0]?.trim() ?? '';
+      const cleaned = firstLine.replace(/^#+\s*/, '');
+      if (cleaned.length > 0 && cleaned.length <= 50) {
+        return cleaned;
+      }
+    }
+    return '通知';
   }
 
   async sendStream(event: StreamEvent, context: MessageContext): Promise<void> {

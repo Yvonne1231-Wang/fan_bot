@@ -372,7 +372,7 @@ onPendingSkillFound?.(candidate, message.id);
     return {
       id: `resp-${Date.now()}`,
       messageId: message.id,
-      content: [{ type: 'text', text: responseText }],
+      content: [{ type: 'markdown' as const, text: responseText }],
       timestamp: Date.now(),
       done: true,
     };

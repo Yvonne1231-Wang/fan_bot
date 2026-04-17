@@ -74,47 +74,51 @@ export async function startFeishuAdapter(): Promise<void> {
     onPendingSkillFound: (candidate, messageId) => {
       const confidence = (candidate.confidence * 100).toFixed(0);
       const text = `💡 检测到可复用的工作流模式「${candidate.name}」(置信度 ${confidence}%)\n\n${candidate.description}\n\n回复 "确认安装 ${candidate.name}" 保存为技能，或 "丢弃 ${candidate.name}" 忽略。`;
-      adapter.send(
-        {
-          id: `skill-notify-${Date.now()}`,
-          messageId: '',
-          content: [{ type: 'text', text }],
-          timestamp: Date.now(),
-          done: true,
-        },
-        {
-          channel: 'feishu',
-          userId: 'system',
-          sessionId: 'skill-notify',
-          metadata: {
-            originalMessageId: messageId,
+      adapter
+        .send(
+          {
+            id: `skill-notify-${Date.now()}`,
+            messageId: '',
+            content: [{ type: 'markdown' as const, text }],
+            timestamp: Date.now(),
+            done: true,
           },
-        },
-      ).catch((err) => {
-        log.error(`Failed to send skill candidate notification: ${err}`);
-      });
+          {
+            channel: 'feishu',
+            userId: 'system',
+            sessionId: 'skill-notify',
+            metadata: {
+              originalMessageId: messageId,
+            },
+          },
+        )
+        .catch((err) => {
+          log.error(`Failed to send skill candidate notification: ${err}`);
+        });
     },
     onSkillImproveSuggested: (suggestion, messageId) => {
       const text = `\u{1F527} 技能「${suggestion.skillName}」可能需要改进\n\n原因：${suggestion.reason}\n\n建议：${suggestion.suggestedFeedback}\n\n回复 "改进 ${suggestion.skillName}" 自动优化，或忽略此消息。`;
-      adapter.send(
-        {
-          id: `skill-improve-${Date.now()}`,
-          messageId: '',
-          content: [{ type: 'text', text }],
-          timestamp: Date.now(),
-          done: true,
-        },
-        {
-          channel: 'feishu',
-          userId: 'system',
-          sessionId: 'skill-improve',
-          metadata: {
-            originalMessageId: messageId,
+      adapter
+        .send(
+          {
+            id: `skill-improve-${Date.now()}`,
+            messageId: '',
+            content: [{ type: 'markdown' as const, text }],
+            timestamp: Date.now(),
+            done: true,
           },
-        },
-      ).catch((err) => {
-        log.error(`Failed to send skill improve notification: ${err}`);
-      });
+          {
+            channel: 'feishu',
+            userId: 'system',
+            sessionId: 'skill-improve',
+            metadata: {
+              originalMessageId: messageId,
+            },
+          },
+        )
+        .catch((err) => {
+          log.error(`Failed to send skill improve notification: ${err}`);
+        });
     },
   });
 
@@ -139,7 +143,7 @@ export async function startFeishuAdapter(): Promise<void> {
       {
         id: `cron-${Date.now()}`,
         messageId: '',
-        content: [{ type: 'text', text: result }],
+        content: [{ type: 'markdown' as const, text: result }],
         timestamp: Date.now(),
         done: true,
       },
