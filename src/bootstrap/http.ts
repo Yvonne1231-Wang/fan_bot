@@ -15,6 +15,7 @@ import {
   registerDefaultTools,
   initMemoryWithLLM,
   initCronScheduler,
+  initObservabilityFromEnv,
 } from './shared.js';
 import { createDebug } from '../utils/debug.js';
 
@@ -26,6 +27,9 @@ const log = createDebug('bootstrap:http');
 export async function startHTTPServer(): Promise<void> {
   const port = Number(process.env.HTTP_PORT) || DEFAULT_HTTP_PORT;
   const llmClient = createLLMClientFromEnv();
+
+  initObservabilityFromEnv();
+
   const sessionManager = createSessionManager({
     store: new JSONLStore({ dir: DEFAULT_SESSION_DIR }),
     maxContextMessages: 40,

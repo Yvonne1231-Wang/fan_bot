@@ -18,6 +18,7 @@ import {
   getCachedSkillEntries,
   registerDefaultTools,
   initMemoryWithLLM,
+  initObservabilityFromEnv,
 } from './shared.js';
 
 /**
@@ -29,6 +30,9 @@ export async function startCLIAdapter(
 ): Promise<void> {
   const userId = await getUserId();
   const llmClient = createLLMClientFromEnv(providerName);
+
+  initObservabilityFromEnv();
+
   const sessionManager = createSessionManager({
     store: new JSONLStore({ dir: DEFAULT_SESSION_DIR }),
     maxContextMessages: 40,
