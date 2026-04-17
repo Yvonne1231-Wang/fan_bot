@@ -10,6 +10,11 @@ import type {
 } from '../llm/types.js';
 import type { ToolRegistry } from '../tools/types.js';
 import type { MemoryService } from '../memory/types.js';
+import type {
+  LangfuseTraceClient,
+  LangfuseSpanClient,
+  LangfuseGenerationClient,
+} from 'langfuse';
 import { createDebug } from '../utils/debug.js';
 import { getErrorMessage } from '../utils/error.js';
 
@@ -32,6 +37,7 @@ export interface RunAgentOptions {
   memory?: MemoryService;
   autoExtractMemory?: boolean;
   callbacks?: AgentCallbacks;
+  trace?: LangfuseTraceClient;
 }
 
 export interface AgentResult {
@@ -241,6 +247,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
     systemPrompt,
     abortSignal,
     callbacks,
+    trace,
   } = options;
 
   const checkAbort = () => {
@@ -266,17 +273,63 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
       let response: LLMResponse;
       if (llmClient.stream) {
         const streamCall = async (): Promise<LLMResponse> => {
-          return llmClient.stream!(
-            messages,
-            toolSchemas,
-            systemPrompt,
-            (delta) => {
-              callbacks?.onContentDelta?.(delta);
-              options.onText?.(delta);
-            },
-            callbacks?.onThinking,
-            options.abortSignal,
-          );
+          let generation: LangfuseGenerationClient | undefined;
+          try {
+            generation = trace?.generation({
+              name: `llm-stream-${iterations}`,
+              model: 'unknown',
+              input: messages.slice(-1),
+            });
+          } catch (langfuseError) {
+            log.warn(
+              `Langfuse generation creation failed: ${getErrorMessage(langfuseError)}`,
+            );
+          }
+
+          try {
+            const result = await llmClient.stream!(
+              messages,
+              toolSchemas,
+              systemPrompt,
+              (delta) => {
+                callbacks?.onContentDelta?.(delta);
+                options.onText?.(delta);
+              },
+              callbacks?.onThinking,
+              options.abortSignal,
+            );
+
+            try {
+              generation?.end({
+                output: extractText(result.content),
+                usage: result.usage
+                  ? {
+                      input: result.usage.input_tokens,
+                      output: result.usage.output_tokens,
+                      total:
+                        result.usage.input_tokens + result.usage.output_tokens,
+                    }
+                  : undefined,
+              });
+            } catch (langfuseError) {
+              log.warn(
+                `Langfuse generation end failed: ${getErrorMessage(langfuseError)}`,
+              );
+            }
+
+            return result;
+          } catch (error) {
+            try {
+              generation?.end({
+                metadata: { error: getErrorMessage(error) },
+              });
+            } catch (langfuseError) {
+              log.warn(
+                `Langfuse generation end (error) failed: ${getErrorMessage(langfuseError)}`,
+              );
+            }
+            throw error;
+          }
         };
 
         response = await withRetry(streamCall, {
@@ -289,16 +342,61 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
         });
       } else {
         const callLLM = async () => {
-          const result = await llmClient.chat(
-            messages,
-            toolSchemas,
-            systemPrompt,
-            options.abortSignal,
-          );
-          const text = extractText(result.content);
-          callbacks?.onContentDelta?.(text);
-          options.onText?.(text);
-          return result;
+          let generation: LangfuseGenerationClient | undefined;
+          try {
+            generation = trace?.generation({
+              name: `llm-chat-${iterations}`,
+              model: 'unknown',
+              input: messages.slice(-1),
+            });
+          } catch (langfuseError) {
+            log.warn(
+              `Langfuse generation creation failed: ${getErrorMessage(langfuseError)}`,
+            );
+          }
+
+          try {
+            const result = await llmClient.chat(
+              messages,
+              toolSchemas,
+              systemPrompt,
+              options.abortSignal,
+            );
+            const text = extractText(result.content);
+            callbacks?.onContentDelta?.(text);
+            options.onText?.(text);
+
+            try {
+              generation?.end({
+                output: text,
+                usage: result.usage
+                  ? {
+                      input: result.usage.input_tokens,
+                      output: result.usage.output_tokens,
+                      total:
+                        result.usage.input_tokens + result.usage.output_tokens,
+                    }
+                  : undefined,
+              });
+            } catch (langfuseError) {
+              log.warn(
+                `Langfuse generation end failed: ${getErrorMessage(langfuseError)}`,
+              );
+            }
+
+            return result;
+          } catch (error) {
+            try {
+              generation?.end({
+                metadata: { error: getErrorMessage(error) },
+              });
+            } catch (langfuseError) {
+              log.warn(
+                `Langfuse generation end (error) failed: ${getErrorMessage(langfuseError)}`,
+              );
+            }
+            throw error;
+          }
         };
 
         response = await withRetry(callLLM, {
@@ -391,6 +489,18 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
               toolUseBlocks.map(async (toolUse) => {
                 checkAbort();
                 log.debug(`executing tool (parallel): ${toolUse.name}`);
+                let span: LangfuseSpanClient | undefined;
+                try {
+                  span = trace?.span({
+                    name: `tool-${toolUse.name}`,
+                    input: toolUse.input,
+                    metadata: { toolUseId: toolUse.id, mode: 'parallel' },
+                  });
+                } catch (langfuseError) {
+                  log.warn(
+                    `Langfuse span creation failed: ${getErrorMessage(langfuseError)}`,
+                  );
+                }
                 callbacks?.onToolStart?.(
                   toolUse.name,
                   toolUse.input,
@@ -398,14 +508,18 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
                   toolUse.id,
                 );
                 try {
-                  const result =
-                    await toolRegistry.dispatchWithConfirmation(
-                      toolUse.name,
-                      toolUse.input,
-                      options.confirmFn,
-                    );
+                  const result = await toolRegistry.dispatchWithConfirmation(
+                    toolUse.name,
+                    toolUse.input,
+                    options.confirmFn,
+                  );
                   log.debug(`tool result: ${result.slice(0, 100)}`);
                   callbacks?.onToolEnd?.(toolUse.name, result, null);
+                  try {
+                    span?.end({ output: result.slice(0, 500) });
+                  } catch {
+                    /* non-blocking */
+                  }
                   return toolResultBlock(toolUse.id, result);
                 } catch (error) {
                   const message = getErrorMessage(error);
@@ -415,11 +529,15 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
                     `Error: ${message}`,
                     null,
                   );
-                  return toolResultBlock(
-                    toolUse.id,
-                    `Error: ${message}`,
-                    true,
-                  );
+                  try {
+                    span?.end({
+                      output: `Error: ${message}`,
+                      statusMessage: 'error',
+                    });
+                  } catch {
+                    /* non-blocking */
+                  }
+                  return toolResultBlock(toolUse.id, `Error: ${message}`, true);
                 }
               }),
             );
@@ -428,6 +546,18 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
             for (const toolUse of toolUseBlocks) {
               checkAbort();
               log.debug(`executing tool (serial): ${toolUse.name}`);
+              let span: LangfuseSpanClient | undefined;
+              try {
+                span = trace?.span({
+                  name: `tool-${toolUse.name}`,
+                  input: toolUse.input,
+                  metadata: { toolUseId: toolUse.id, mode: 'serial' },
+                });
+              } catch (langfuseError) {
+                log.warn(
+                  `Langfuse span creation failed: ${getErrorMessage(langfuseError)}`,
+                );
+              }
               callbacks?.onToolStart?.(
                 toolUse.name,
                 toolUse.input,
@@ -435,23 +565,31 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
                 toolUse.id,
               );
               try {
-                const result =
-                  await toolRegistry.dispatchWithConfirmation(
-                    toolUse.name,
-                    toolUse.input,
-                    options.confirmFn,
-                  );
+                const result = await toolRegistry.dispatchWithConfirmation(
+                  toolUse.name,
+                  toolUse.input,
+                  options.confirmFn,
+                );
                 log.debug(`tool result: ${result.slice(0, 100)}`);
                 callbacks?.onToolEnd?.(toolUse.name, result, null);
+                try {
+                  span?.end({ output: result.slice(0, 500) });
+                } catch {
+                  /* non-blocking */
+                }
                 toolResults.push(toolResultBlock(toolUse.id, result));
               } catch (error) {
                 const message = getErrorMessage(error);
                 log.error(`tool error: ${message}`);
-                callbacks?.onToolEnd?.(
-                  toolUse.name,
-                  `Error: ${message}`,
-                  null,
-                );
+                callbacks?.onToolEnd?.(toolUse.name, `Error: ${message}`, null);
+                try {
+                  span?.end({
+                    output: `Error: ${message}`,
+                    statusMessage: 'error',
+                  });
+                } catch {
+                  /* non-blocking */
+                }
                 toolResults.push(
                   toolResultBlock(toolUse.id, `Error: ${message}`, true),
                 );

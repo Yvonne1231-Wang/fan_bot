@@ -6,6 +6,10 @@ import type { SkillEntry } from '../skills/types.js';
 import type { Tool, ToolRegistry } from '../tools/types.js';
 import { createSubAgentTools } from '../agent/index.js';
 import {
+  initObservability,
+  shutdownObservability,
+} from '../observability/index.js';
+import {
   getMemory,
   initMemory,
   LanceDBMemoryService,
@@ -201,6 +205,29 @@ export async function initMemoryWithLLM(llmClient: LLMClient): Promise<void> {
     memory.setSessionArchive(getSessionArchive());
   }
 }
+
+/**
+ * 从环境变量初始化 Langfuse 可观测性。
+ * 未配置 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY 时静默跳过。
+ */
+export function initObservabilityFromEnv(): void {
+  const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
+  const secretKey = process.env.LANGFUSE_SECRET_KEY;
+
+  initObservability({
+    publicKey: publicKey ?? '',
+    secretKey: secretKey ?? '',
+    baseUrl: process.env.LANGFUSE_BASE_URL,
+    enabled: publicKey ? true : false,
+    environment: process.env.LANGFUSE_ENVIRONMENT ?? process.env.NODE_ENV,
+    release: process.env.LANGFUSE_RELEASE,
+    sampleRate: process.env.LANGFUSE_SAMPLE_RATE
+      ? Number(process.env.LANGFUSE_SAMPLE_RATE)
+      : undefined,
+  });
+}
+
+export { shutdownObservability };
 
 /**
  * 初始化并启动 Cron 调度器

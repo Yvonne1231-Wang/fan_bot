@@ -32,6 +32,11 @@ import {
   evaluateForImprovement,
 } from './skills/extractor.js';
 import type { ImproveSuggestion } from './skills/extractor.js';
+import {
+  createTrace,
+  updateTrace,
+  isObservabilityEnabled,
+} from './observability/index.js';
 
 const log = createDebug('handler');
 
@@ -88,7 +93,10 @@ export interface MessageHandlerOptions {
   /** 当后台检测到可提炼技能时的通知回调 */
   onPendingSkillFound?: (candidate: SkillCandidate, messageId: string) => void;
   /** 当后台检测到已有技能需要改进时的通知回调 */
-  onSkillImproveSuggested?: (suggestion: ImproveSuggestion, messageId: string) => void;
+  onSkillImproveSuggested?: (
+    suggestion: ImproveSuggestion,
+    messageId: string,
+  ) => void;
 }
 
 /**
@@ -126,6 +134,20 @@ export function createMessageHandler(
       message.context.groupId ||
       (message.context.metadata.chatId as string | undefined) ||
       message.context.dmId;
+
+    const trace = createTrace({
+      name: 'message-handler',
+      sessionId,
+      userId,
+      input: message.content
+        .filter((b) => b.type === 'text')
+        .map((b) => (b as { text: string }).text)
+        .join('\n'),
+      metadata: {
+        channel: message.context.channel,
+        groupId: message.context.groupId,
+      },
+    });
 
     if (userId) {
       memory.setUserId(userId);
@@ -206,6 +228,7 @@ export function createMessageHandler(
           abortSignal: getAbortSignal?.(
             message.context.metadata.chatId as string,
           ),
+          trace: trace ?? undefined,
         });
         step.status = 'done';
         step.result = result.response;
@@ -265,7 +288,7 @@ export function createMessageHandler(
           sourceChatId,
         });
 
-onPendingSkillFound?.(candidate, message.id);
+        onPendingSkillFound?.(candidate, message.id);
       });
       runBackgroundTask('plan-skill-improve-evaluate', async () => {
         const usedSkills = extractUsedSkills(currentMessages);
@@ -296,6 +319,7 @@ onPendingSkillFound?.(candidate, message.id);
         abortSignal: getAbortSignal?.(
           message.context.metadata.chatId as string,
         ),
+        trace: trace ?? undefined,
       });
 
       responseText = result.response;
@@ -347,7 +371,7 @@ onPendingSkillFound?.(candidate, message.id);
           sourceChatId,
         });
 
-onPendingSkillFound?.(candidate, message.id);
+        onPendingSkillFound?.(candidate, message.id);
       });
       runBackgroundTask('skill-improve-evaluate', async () => {
         const usedSkills = extractUsedSkills(result.messages);
@@ -366,6 +390,12 @@ onPendingSkillFound?.(candidate, message.id);
       // 清理过期的待确认技能
       runBackgroundTask('skill-cleanup', async () => {
         await cleanupExpiredPending();
+      });
+    }
+
+    if (trace) {
+      updateTrace(trace, {
+        output: responseText.slice(0, 500),
       });
     }
 

@@ -19,6 +19,7 @@ import {
   initMemoryWithLLM,
   initCronScheduler,
   stopSkillsWatcher,
+  initObservabilityFromEnv,
 } from './shared.js';
 import { createDebug } from '../utils/debug.js';
 
@@ -39,6 +40,9 @@ export async function startFeishuAdapter(): Promise<void> {
 
   const userId = await getUserId();
   const llmClient = createLLMClientFromEnv();
+
+  initObservabilityFromEnv();
+
   const sessionManager = createSessionManager({
     store: new JSONLStore({ dir: DEFAULT_SESSION_DIR }),
     maxContextMessages: 40,

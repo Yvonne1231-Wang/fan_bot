@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Langfuse] - 2026-04-17
+
+### Added
+- **Langfuse 可观测性集成** - LLM 调用追踪、成本分析、调试可视化
+  - 新增 `src/observability/` 模块，封装 Langfuse SDK 初始化与 Trace/Span/Generation 管理
+  - Agent Loop 中每次 LLM 调用自动创建 Generation，记录 input/output/token usage
+  - Agent Loop 中每次工具调用自动创建 Span，记录工具名、输入输出
+  - Handler 层自动创建 Trace，关联 sessionId/userId
+  - 未配置密钥时静默跳过，零开销
+- **自部署方案** - `docker-compose.langfuse.yml` + `scripts/langfuse-keys.sh`
+  - 一键启动 Langfuse v3（PostgreSQL + Redis + ClickHouse + MinIO）
+  - 密钥自动生成脚本
+  - 数据完全在内网，不出外网
+
+### Changed
+- `RunAgentOptions` 新增可选 `trace` 参数，向后兼容
+- `.env.example` 新增 Langfuse 配置项说明
+- `.gitignore` 新增 `.env.langfuse` 排除
+
+---
+
 ## Memory System
 
 - **混合检索** - 向量搜索 + BM25 混合模式

@@ -37,6 +37,11 @@
 - **签名验证** - HMAC 安全机制
 - **主动推送** - 定时任务结果发送到指定飞书聊天
 
+### Observability
+- **Langfuse 集成** - LLM 调用追踪、成本分析、调试可视化
+- **自部署方案** - Docker Compose 一键部署，数据不出内网
+- **零侵入** - 未配置密钥时静默跳过，不影响主流程
+
 ---
 
 ## 项目结构
@@ -61,6 +66,7 @@ fan_bot/
 │   ├── cron/            # Cron 任务调度
 │   ├── feishu/          # 飞书集成 + Skills
 │   ├── media-understanding/  # 多模态（图片/音频）
+│   ├── observability/    # 可观测性（Langfuse）
 │   └── utils/
 ├── sessions/             # 会话存储（运行时创建）
 └── memory/              # 记忆存储（运行时创建）
@@ -153,6 +159,11 @@ TRANSPORT=feishu npm run start
 | `LOG_MAX_SIZE_MB` | `10` | 日志滚动大小（MB） |
 | `LOG_MAX_AGE_DAYS` | `7` | 日志保留天数 |
 | `DEBUG` | - | 调试日志命名空间 |
+| `LANGFUSE_PUBLIC_KEY` | - | Langfuse Public Key（不配置则禁用） |
+| `LANGFUSE_SECRET_KEY` | - | Langfuse Secret Key |
+| `LANGFUSE_BASE_URL` | `https://cloud.langfuse.com` | Langfuse 服务地址（自部署时修改） |
+| `LANGFUSE_ENVIRONMENT` | - | 环境标识（如 production） |
+| `LANGFUSE_SAMPLE_RATE` | `1.0` | 采样率（0.0-1.0） |
 
 ---
 
@@ -287,3 +298,98 @@ DEBUG=agent:loop,llm:* npm run cli
 - 超过 10MB 自动切割（`bot.log.2026-03-29`）
 - 超过 7 天自动删除
 - 可通过 `LOG_MAX_SIZE_MB` 和 `LOG_MAX_AGE_DAYS` 自定义
+
+---
+
+## 可观测性（Langfuse）
+
+Langfuse 提供 LLM 调用追踪、Token 成本分析、工具调用链路可视化。不配置时静默跳过，不影响主流程。
+
+### 追踪架构
+
+```
+用户消息 → handler (创建 Trace)
+              ↓
+         Agent Loop
+         ├── LLM 调用 → Generation (input/output/usage)
+         ├── 工具调用 → Span (tool name/input/output)
+         └── ...
+              ↓
+         handler (更新 Trace output)
+```
+
+### 自部署（推荐）
+
+数据敏感场景（飞书集成等）建议自部署，数据不出内网。
+
+**前置条件：安装 Docker**
+
+Mac 上推荐通过 Homebrew 安装 Docker Desktop：
+
+```bash
+brew install --cask docker
+```
+
+安装后从 Applications 启动 Docker Desktop，等状态栏鲸鱼图标稳定即可。也可从[官网](https://www.docker.com/products/docker-desktop/)下载 DMG 手动安装。
+
+> Docker Desktop 需分配至少 4GB 内存（Preferences → Resources → Memory），Langfuse 的 6 个服务需要足够内存。
+
+验证安装：
+
+```bash
+docker --version
+docker compose version
+```
+
+**1. 生成密钥**
+
+```bash
+./scripts/langfuse-keys.sh
+```
+
+**2. 启动服务**
+
+```bash
+docker compose -f docker-compose.langfuse.yml --env-file .env.langfuse up -d
+```
+
+启动后包含 6 个服务：Langfuse Web、Worker、PostgreSQL、Redis、ClickHouse、MinIO。
+
+**3. 初始化**
+
+1. 访问 `http://localhost:3100`
+2. 创建管理员账户
+3. 创建项目 → 获取 API Key
+
+**4. 配置 .env**
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-xxxxxxxx
+LANGFUSE_SECRET_KEY=sk-lf-xxxxxxxx
+LANGFUSE_BASE_URL=http://localhost:3100
+```
+
+**5. 重启应用**
+
+```bash
+npm run start
+```
+
+### 常用操作
+
+```bash
+# 查看服务状态
+docker compose -f docker-compose.langfuse.yml ps
+
+# 查看日志
+docker compose -f docker-compose.langfuse.yml logs -f langfuse-web
+
+# 升级到最新版
+docker compose -f docker-compose.langfuse.yml up --pull always -d
+
+# 备份数据库
+docker exec langfuse-postgres pg_dump -U langfuse langfuse > backup_$(date +%F).sql
+
+# 停止服务
+docker compose -f docker-compose.langfuse.yml down
+```
