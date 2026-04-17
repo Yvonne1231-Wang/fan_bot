@@ -14,7 +14,6 @@
     "smoke": "tsx src/agent/smoke_test.ts",
     "smoke:agent": "tsx src/agent/smoke_test.ts",
     "smoke:team": "tsx src/agent/team/smoke_test.ts",
-    "smoke:memory": "tsx src/memory/smoke_test.ts",
     "smoke:session": "tsx src/session/smoke_test.ts",
     "feishu:config": "lark-cli config init",
     "feishu:login": "lark-cli auth login --recommend",

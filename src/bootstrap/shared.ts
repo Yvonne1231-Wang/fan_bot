@@ -100,7 +100,7 @@ let globalArchive: SessionArchive | null = null;
 /**
  * 获取或创建全局 SessionArchive 实例。
  */
-export function getSessionArchive(): SessionArchive {
+function getSessionArchive(): SessionArchive {
   if (!globalArchive) {
     globalArchive = new SessionArchive('.fan_bot/archive.db');
   }
