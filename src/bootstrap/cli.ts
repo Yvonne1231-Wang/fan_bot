@@ -19,6 +19,8 @@ import {
   registerDefaultTools,
   initMemoryWithLLM,
   initObservabilityFromEnv,
+  initSandboxFromEnv,
+  cleanupSandbox,
 } from './shared.js';
 
 /**
@@ -32,6 +34,8 @@ export async function startCLIAdapter(
   const llmClient = createLLMClientFromEnv(providerName);
 
   initObservabilityFromEnv();
+
+  await initSandboxFromEnv();
 
   const sessionManager = createSessionManager({
     store: new JSONLStore({ dir: DEFAULT_SESSION_DIR }),
@@ -122,4 +126,10 @@ export async function startCLIAdapter(
 
   await adapter.initialize();
   await adapter.start();
+
+  process.on('SIGINT', async () => {
+    log.info('Shutting down...');
+    await cleanupSandbox();
+    process.exit(0);
+  });
 }

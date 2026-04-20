@@ -20,6 +20,8 @@ import {
   initCronScheduler,
   stopSkillsWatcher,
   initObservabilityFromEnv,
+  initSandboxFromEnv,
+  cleanupSandbox,
 } from './shared.js';
 import { createDebug } from '../utils/debug.js';
 
@@ -42,6 +44,8 @@ export async function startFeishuAdapter(): Promise<void> {
   const llmClient = createLLMClientFromEnv();
 
   initObservabilityFromEnv();
+
+  await initSandboxFromEnv();
 
   const sessionManager = createSessionManager({
     store: new JSONLStore({ dir: DEFAULT_SESSION_DIR }),
@@ -169,6 +173,7 @@ export async function startFeishuAdapter(): Promise<void> {
     log.info('Shutting down...');
     await stopSkillsWatcher();
     await cronScheduler.stop();
+    await cleanupSandbox();
     if (feishuAdapter) {
       await feishuAdapter.close();
     }

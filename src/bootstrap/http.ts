@@ -16,6 +16,8 @@ import {
   initMemoryWithLLM,
   initCronScheduler,
   initObservabilityFromEnv,
+  initSandboxFromEnv,
+  cleanupSandbox,
 } from './shared.js';
 import { createDebug } from '../utils/debug.js';
 
@@ -29,6 +31,8 @@ export async function startHTTPServer(): Promise<void> {
   const llmClient = createLLMClientFromEnv();
 
   initObservabilityFromEnv();
+
+  await initSandboxFromEnv();
 
   const sessionManager = createSessionManager({
     store: new JSONLStore({ dir: DEFAULT_SESSION_DIR }),
@@ -105,6 +109,7 @@ export async function startHTTPServer(): Promise<void> {
   process.on('SIGINT', async () => {
     log.info('Shutting down...');
     await cronScheduler.stop();
+    await cleanupSandbox();
     await adapter.close();
     process.exit(0);
   });

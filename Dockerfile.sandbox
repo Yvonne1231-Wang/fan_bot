@@ -1,0 +1,19 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /workspace/sessions /workspace/data /workspace/tmp
+
+WORKDIR /workspace
+
+RUN chmod 1733 /tmp && \
+    chmod 1733 /workspace/tmp
+
+RUN groupadd -r sandbox && useradd -r -g sandbox -d /workspace sandbox && \
+    chown -R sandbox:sandbox /workspace
+
+USER sandbox

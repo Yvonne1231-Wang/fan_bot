@@ -44,6 +44,7 @@ import {
   loadSkillTools,
 } from '../skills/index.js';
 import type { MessageContext } from '../transport/unified.js';
+import { initSandbox, destroySandbox } from '../sandbox/index.js';
 import { createDebug } from '../utils/debug.js';
 
 const log = createDebug('bootstrap');
@@ -228,6 +229,26 @@ export function initObservabilityFromEnv(): void {
 }
 
 export { shutdownObservability };
+
+/**
+ * 初始化 Docker 沙箱
+ *
+ * 当 SANDBOX_ENABLED=true 时创建并启动沙箱容器，
+ * 未配置时静默跳过。沙箱初始化失败时自动降级到宿主机执行。
+ */
+export async function initSandboxFromEnv(): Promise<void> {
+  await initSandbox();
+}
+
+/**
+ * 销毁 Docker 沙箱
+ *
+ * 停止并删除沙箱容器，释放资源。
+ * 应在进程退出时调用。
+ */
+export async function cleanupSandbox(): Promise<void> {
+  await destroySandbox();
+}
 
 /**
  * 初始化并启动 Cron 调度器
