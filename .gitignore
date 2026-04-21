@@ -48,3 +48,9 @@ coverage/
 # Temp files
 tmp/
 .test-tmp/
+
+# Self-iteration runtime files
+.self-iteration-checkpoint.json
+.modification-lock.json
+logs/audit.jsonl
+
