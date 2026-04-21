@@ -1,7 +1,7 @@
 // ─── Safe Code Modifier ─────────────────────────────────────────────────────
 // 核心模块：在隔离 Git 分支上执行修改，验证通过后合并到主分支
 
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import { createDebug } from '../utils/debug.js';
 import { isPathAllowed, checkModificationScope, scanCode, DEFAULT_POLICY } from './policy.js';
@@ -220,17 +220,16 @@ export class SafeCodeModifier {
       // 10. 清理临时分支
       this.safeExec(`git branch -d ${branch}`);
 
-      // 10.5 Build & restart service
+      // 10.5 Build & deferred restart
       this.checkpoint.save(requestId, 'build_started', request, {
         branch,
         commitHash,
       });
       log.info('开始 build...');
       this.exec('npm run build');
-      log.info('Build 完成，重启服务...');
-      this.safeExec('pm2 restart fan_bot');
 
-      // 11. 完成
+      // 11. 完成：先清理 checkpoint、写审计日志、组装返回值
+      //     然后再调度延迟重启（解决 pm2 restart 自杀问题）
       this.checkpoint.clear();
 
       const result: ModificationResult = {
@@ -244,6 +243,12 @@ export class SafeCodeModifier {
 
       this.logAudit(request, result);
       log.info(`修改完成 ✓ tag=${tag} (${result.duration}ms)`);
+
+      // 12. 延迟重启：spawn 一个 detached 子进程，等待 2 秒后执行 pm2 restart
+      //     当前进程不持有该子进程引用，因此 pm2 restart 杀掉当前进程时
+      //     checkpoint 和审计日志已经全部落盘
+      this.scheduleRestart();
+
       return result;
     } catch (err) {
       // 异常兜底：回到主分支
@@ -270,6 +275,28 @@ export class SafeCodeModifier {
    */
   getAuditLogger(): AuditLogger {
     return this.audit;
+  }
+
+  /**
+   * 延迟重启 pm2 服务
+   *
+   * 原理：spawn 一个 detached 子进程执行 `sleep 2 && pm2 restart fan_bot`
+   * - detached: 子进程独立于当前进程组，不受当前进程退出影响
+   * - unref(): 当前进程不等待子进程，event loop 不阻塞
+   * - stdio: ignore，不继承当前进程的 fd
+   *
+   * 这样当前进程可以先完成 checkpoint.clear()、审计日志写入、
+   * 返回结果给调用方，2 秒后子进程才执行 pm2 restart
+   */
+  private scheduleRestart(): void {
+    log.info('调度延迟重启: 2 秒后执行 pm2 restart fan_bot ...');
+    const child = spawn('sh', ['-c', 'sleep 2 && pm2 restart fan_bot'], {
+      cwd: this.config.workDir,
+      detached: true,
+      stdio: 'ignore',
+    });
+    // 解除父进程对子进程的引用，允许父进程正常退出
+    child.unref();
   }
 
   private fail(
