@@ -117,7 +117,7 @@ export class CodeValidator {
 
   private runTests(): { pass: boolean; error?: string } {
     try {
-      execSync('npm test -- --bail', {
+      execSync('npm test -- --bail 1', {
         cwd: this.config.workDir,
         encoding: 'utf-8',
         stdio: 'pipe',
