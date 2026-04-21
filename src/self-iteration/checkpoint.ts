@@ -1,7 +1,7 @@
 // ─── Checkpoint Manager ─────────────────────────────────────────────────────
 // 状态持久化：修改流程中途崩溃后可从断点恢复
 
-import { writeFileSync, existsSync, unlinkSync, readFileSync } from 'fs';
+import { writeFileSync, existsSync, unlinkSync, readFileSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { createDebug } from '../utils/debug.js';
 import type { ModificationCheckpoint, ModificationState, CodeChangeRequest } from './types.js';
@@ -38,6 +38,8 @@ export class CheckpointManager {
       error: extra?.error,
     };
 
+    const dir = this.filePath.substring(0, this.filePath.lastIndexOf("/"));
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(this.filePath, JSON.stringify(checkpoint, null, 2));
     log.debug(`Checkpoint 已保存: state=${state}`);
   }

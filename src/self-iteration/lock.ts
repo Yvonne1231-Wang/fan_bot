@@ -6,6 +6,7 @@ import {
   existsSync,
   unlinkSync,
   readFileSync,
+  mkdirSync,
 } from 'fs';
 import { createDebug } from '../utils/debug.js';
 import type { CodeChangeRequest, ModificationResult } from './types.js';
@@ -72,6 +73,8 @@ export class ModificationLock {
       requestId,
     };
 
+    const lockDir = this.lockFile.substring(0, this.lockFile.lastIndexOf("/"));
+    if (!existsSync(lockDir)) mkdirSync(lockDir, { recursive: true });
     writeFileSync(this.lockFile, JSON.stringify(lockInfo, null, 2));
     log.info(`锁已获取: ${operator} (request: ${requestId})`);
     return { acquired: true };
