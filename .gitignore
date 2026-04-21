@@ -47,3 +47,4 @@ coverage/
 
 # Temp files
 tmp/
+.test-tmp/
