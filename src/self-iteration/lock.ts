@@ -30,7 +30,7 @@ export class ModificationLock {
   private lockFile: string;
 
   constructor(workDir: string) {
-    this.lockFile = `${workDir}/.self-iteration.lock`;
+    this.lockFile = `${workDir}/.git/.self-iteration.lock`;
   }
 
   /**

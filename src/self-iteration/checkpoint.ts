@@ -14,7 +14,7 @@ export class CheckpointManager {
 
   constructor(workDir: string) {
     this.workDir = workDir;
-    this.filePath = `${workDir}/.self-iteration-checkpoint.json`;
+    this.filePath = `${workDir}/.git/.self-iteration-checkpoint.json`;
   }
 
   /**
