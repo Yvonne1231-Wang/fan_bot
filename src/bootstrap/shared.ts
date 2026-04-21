@@ -20,6 +20,7 @@ import { registry, registerTool } from '../tools/registry.js';
 import { calculatorTool } from '../tools/calculator.js';
 import { readFileTool, writeFileTool, listDirTool } from '../tools/files.js';
 import { shellTool } from '../tools/shell.js';
+import { selfModifyTool, selfRollbackTool, selfVersionsTool } from '../tools/self-iteration.js';
 import { webSearchTool } from '../tools/web_search.js';
 import { webFetchTool } from '../tools/web_fetch.js';
 import { skillTool } from '../tools/skill.js';
@@ -171,6 +172,11 @@ export async function registerDefaultTools(
   registerTool(readFileTool);
   registerTool(writeFileTool);
   registerTool(listDirTool);
+
+  // Self-iteration tools
+  registerTool(selfModifyTool);
+  registerTool(selfRollbackTool);
+  registerTool(selfVersionsTool);
   registerTool(memoryListTool);
   registerTool(memoryDeleteTool);
   registerTool(memorySearchTool);

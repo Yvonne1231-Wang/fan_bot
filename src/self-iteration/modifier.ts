@@ -220,6 +220,16 @@ export class SafeCodeModifier {
       // 10. 清理临时分支
       this.safeExec(`git branch -d ${branch}`);
 
+      // 10.5 Build & restart service
+      this.checkpoint.save(requestId, 'build_started', request, {
+        branch,
+        commitHash,
+      });
+      log.info('开始 build...');
+      this.exec('npm run build');
+      log.info('Build 完成，重启服务...');
+      this.safeExec('pm2 restart fan_bot');
+
       // 11. 完成
       this.checkpoint.clear();
 
