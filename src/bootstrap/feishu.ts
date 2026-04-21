@@ -73,6 +73,7 @@ export async function startFeishuAdapter(): Promise<void> {
     sessionManager,
     mediaConfig,
     getSkillEntries: getCachedSkillEntries,
+    permissionService,
     getAbortSignal: (chatId?: string) =>
       chatId ? adapter.getAbortSignal(chatId) : undefined,
     onPendingSkillFound: (candidate, messageId) => {
@@ -160,6 +161,7 @@ export async function startFeishuAdapter(): Promise<void> {
     messageHandler,
     resultSender,
     defaultNotifyChatId: process.env.SKILL_NOTIFY_CHAT_ID,
+    permissionService,
   });
   await cronScheduler.start();
 

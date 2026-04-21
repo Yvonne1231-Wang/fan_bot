@@ -239,15 +239,18 @@ export const cronCreateTool: Tool = {
       notificationTarget = { chatId: ctx.chatId };
     }
 
-    const task = await store.create({
-      name,
-      type,
-      cronExpression,
-      payload,
-      enabled: true,
-      runOnce,
-      notificationTarget,
-    });
+    const task = await store.create(
+      {
+        name,
+        type,
+        cronExpression,
+        payload,
+        enabled: true,
+        runOnce,
+        notificationTarget,
+      },
+      ctx.userId,
+    );
 
     log.info(`Created cron task: ${task.name} (${task.id})`);
 

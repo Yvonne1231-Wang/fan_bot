@@ -218,6 +218,10 @@ export class DefaultPermissionService implements PermissionService {
       return { allowed: true };
     }
 
+    if (context.userId === 'cron-system' || context.userId === 'system') {
+      return { allowed: true };
+    }
+
     const config = context.groupId ? this.config.group : this.config.dm;
 
     if (context.groupId && toolName === 'shell') {
@@ -427,8 +431,12 @@ export function createPermissionServiceFromEnv(): PermissionService {
       whitelist:
         process.env.FEISHU_GROUP_WHITELIST?.split(',').filter(Boolean) || [],
       blacklist: [],
-      allowedTools: [],
-      forbiddenTools: [],
+      allowedTools:
+        process.env.FEISHU_GROUP_ALLOWED_TOOLS?.split(',').filter(Boolean) ||
+        [],
+      forbiddenTools:
+        process.env.FEISHU_GROUP_FORBIDDEN_TOOLS?.split(',').filter(Boolean) ||
+        [],
       allowMention: true,
       allowDirectCall: process.env.FEISHU_ALLOW_DIRECT_CALL === 'true',
       allowedUsers:
@@ -456,6 +464,12 @@ export function getPermissionConfigFromEnv(): PermissionConfig {
       allowDirectCall: process.env.FEISHU_ALLOW_DIRECT_CALL === 'true',
       allowedUsers:
         process.env.FEISHU_GROUP_ALLOWED_USERS?.split(',').filter(Boolean) ||
+        [],
+      allowedTools:
+        process.env.FEISHU_GROUP_ALLOWED_TOOLS?.split(',').filter(Boolean) ||
+        [],
+      forbiddenTools:
+        process.env.FEISHU_GROUP_FORBIDDEN_TOOLS?.split(',').filter(Boolean) ||
         [],
       rateLimitPerUser: Number(process.env.FEISHU_GROUP_RATE_LIMIT) || 10,
       rateLimitWindowMs:

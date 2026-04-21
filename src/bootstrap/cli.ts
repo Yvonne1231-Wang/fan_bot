@@ -85,6 +85,7 @@ export async function startCLIAdapter(
     mediaConfig,
     getSkillEntries: getCachedSkillEntries,
     getAbortSignal: () => abortController?.signal,
+    permissionService,
   });
 
   adapter.setMessageHandler(async (message) => {

@@ -14,6 +14,7 @@ import type { LLMClient } from '../llm/types.js';
 import type { ToolRegistry } from '../tools/types.js';
 import type { MessageHandler } from '../transport/adapter.js';
 import type { MemoryService } from '../memory/types.js';
+import type { PermissionService } from '../permission/index.js';
 import type {
   UnifiedMessage,
   UnifiedResponse,
@@ -44,6 +45,7 @@ export interface CronExecutorOptions {
   memory?: MemoryService;
   notificationHandler?: MessageHandler;
   resultSender?: CronResultSender;
+  permissionService?: PermissionService;
 }
 
 export class CronExecutor {
@@ -85,7 +87,10 @@ export class CronExecutor {
           );
           break;
         case 'shell':
-          result = await this.executeShell(task.payload as ShellTaskPayload);
+          result = await this.executeShell(
+            task.payload as ShellTaskPayload,
+            task.createdBy,
+          );
           break;
         case 'skill-notify':
           result = await this.executeSkillNotify(
@@ -123,6 +128,11 @@ export class CronExecutor {
         }
       }
 
+      await this.notifyCreator(
+        task,
+        `✅ 定时任务「${task.name}」已完成`,
+      );
+
       return {
         taskId: task.id,
         success: true,
@@ -133,12 +143,59 @@ export class CronExecutor {
       const errorMessage = getErrorMessage(error);
       log.error(`Cron task failed: ${task.name} - ${errorMessage}`);
 
+      await this.notifyCreator(
+        task,
+        `❌ 定时任务「${task.name}」执行失败：${errorMessage}`,
+      );
+
       return {
         taskId: task.id,
         success: false,
         error: errorMessage,
         executedAt: Date.now(),
       };
+    }
+  }
+
+  /**
+   * 发送任务完成通知到创建者的私聊
+   *
+   * 使用 createdBy（飞书 open_id）作为接收目标，
+   * receiveIdType 设为 open_id 以确保消息发送到私聊窗口。
+   */
+  private async notifyCreator(
+    task: CronTask,
+    message: string,
+  ): Promise<void> {
+    if (!task.createdBy || !this.options.resultSender) {
+      return;
+    }
+
+    if (task.type === 'skill-notify') {
+      return;
+    }
+
+    const creatorContext: MessageContext = {
+      channel: 'feishu',
+      userId: 'cron-system',
+      sessionId: `cron-notify-${task.id}`,
+      metadata: {
+        chatId: task.createdBy,
+        receiveIdType: 'open_id',
+      },
+    };
+
+    try {
+      await this.options.resultSender(message, creatorContext);
+      log.info(`Completion notification sent to creator: ${task.createdBy}`);
+    } catch (notifyError) {
+      const notifyErrorMsg =
+        notifyError instanceof Error
+          ? notifyError.message
+          : String(notifyError);
+      log.error(
+        `Failed to send completion notification to creator: ${notifyErrorMsg}`,
+      );
     }
   }
 
@@ -152,14 +209,25 @@ export class CronExecutor {
     sessionId: string,
     userId?: string,
   ): Promise<string> {
-    const { llmClient, toolRegistry, memory } = this.options;
+    const { llmClient, toolRegistry, memory, permissionService } = this.options;
 
-    // 注入用户 context，确保 memory 和工具能正确识别任务创建者
+    const effectiveUserId = userId || 'cron-system';
     const ctx = {
       channel: 'cron',
-      userId: userId || 'cron-system',
+      userId: effectiveUserId,
       sessionId,
       chatId: sessionId,
+    };
+
+    /**
+     * 构造权限检查上下文，以任务创建者身份检查工具权限
+     * cron-system / system 用户在 checkToolPermission 中直接放行
+     */
+    const messageContext: import('../transport/unified.js').MessageContext = {
+      channel: 'http',
+      userId: effectiveUserId,
+      sessionId,
+      metadata: {},
     };
 
     return runWithContext(ctx, async () => {
@@ -188,6 +256,8 @@ export class CronExecutor {
         maxIterations,
         systemPrompt: systemPrompt + cronGuidance,
         abortSignal: AbortSignal.timeout(timeoutMs),
+        permissionService,
+        messageContext,
       });
 
       return result.response;
@@ -257,9 +327,33 @@ export class CronExecutor {
   /**
    * 执行 Shell 任务
    *
-   * 运行 shell 命令并返回输出
+   * 运行 shell 命令并返回输出，
+   * 非管理员创建的任务会被权限检查拒绝
    */
-  private async executeShell(payload: ShellTaskPayload): Promise<string> {
+  private async executeShell(
+    payload: ShellTaskPayload,
+    userId?: string,
+  ): Promise<string> {
+    const { permissionService } = this.options;
+    const effectiveUserId = userId || 'cron-system';
+
+    if (permissionService && effectiveUserId !== 'cron-system' && effectiveUserId !== 'system') {
+      const access = await permissionService.checkToolPermission(
+        {
+          channel: 'http',
+          userId: effectiveUserId,
+          sessionId: `cron-shell-${Date.now()}`,
+          metadata: {},
+        },
+        'shell',
+      );
+      if (!access.allowed) {
+        throw new SecurityError(
+          `Shell task denied for user ${effectiveUserId}: ${access.reason}`,
+        );
+      }
+    }
+
     const timeout = payload.timeout || 60000;
 
     validateShellCommand(payload.command);

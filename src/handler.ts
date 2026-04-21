@@ -15,6 +15,7 @@ import {
 } from './agent/index.js';
 import { registry } from './tools/registry.js';
 import { getMemory } from './memory/index.js';
+import type { PermissionService } from './permission/index.js';
 import {
   runMediaUnderstanding,
   unifiedToMsgContext,
@@ -90,13 +91,12 @@ export interface MessageHandlerOptions {
   mediaConfig?: MediaConfig;
   getAbortSignal?: (chatId?: string) => AbortSignal | undefined;
   getSkillEntries: () => SkillEntry[];
-  /** 当后台检测到可提炼技能时的通知回调 */
   onPendingSkillFound?: (candidate: SkillCandidate, messageId: string) => void;
-  /** 当后台检测到已有技能需要改进时的通知回调 */
   onSkillImproveSuggested?: (
     suggestion: ImproveSuggestion,
     messageId: string,
   ) => void;
+  permissionService?: PermissionService;
 }
 
 /**
@@ -121,6 +121,7 @@ export function createMessageHandler(
     getSkillEntries,
     onPendingSkillFound,
     onSkillImproveSuggested,
+    permissionService,
   } = options;
   const memory = getMemory();
 
@@ -229,6 +230,8 @@ export function createMessageHandler(
             message.context.metadata.chatId as string,
           ),
           trace: trace ?? undefined,
+          permissionService,
+          messageContext: message.context,
         });
         step.status = 'done';
         step.result = result.response;
@@ -320,6 +323,8 @@ export function createMessageHandler(
           message.context.metadata.chatId as string,
         ),
         trace: trace ?? undefined,
+        permissionService,
+        messageContext: message.context,
       });
 
       responseText = result.response;

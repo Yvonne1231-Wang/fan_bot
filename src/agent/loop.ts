@@ -10,6 +10,8 @@ import type {
 } from '../llm/types.js';
 import type { ToolRegistry } from '../tools/types.js';
 import type { MemoryService } from '../memory/types.js';
+import type { PermissionService } from '../permission/index.js';
+import type { MessageContext } from '../transport/unified.js';
 import type {
   LangfuseTraceClient,
   LangfuseSpanClient,
@@ -38,6 +40,8 @@ export interface RunAgentOptions {
   autoExtractMemory?: boolean;
   callbacks?: AgentCallbacks;
   trace?: LangfuseTraceClient;
+  permissionService?: PermissionService;
+  messageContext?: MessageContext;
 }
 
 export interface AgentResult {
@@ -248,12 +252,30 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
     abortSignal,
     callbacks,
     trace,
+    permissionService,
+    messageContext,
   } = options;
 
   const checkAbort = () => {
     if (abortSignal?.aborted) {
       throw new Error('Agent execution cancelled by user');
     }
+  };
+
+  /**
+   * 检查工具调用权限，无权限时返回拒绝原因
+   */
+  const checkToolAccess = async (
+    toolName: string,
+  ): Promise<{ allowed: boolean; reason?: string }> => {
+    if (!permissionService || !messageContext) {
+      return { allowed: true };
+    }
+    const result = await permissionService.checkToolPermission(
+      messageContext,
+      toolName,
+    );
+    return { allowed: result.allowed, reason: result.reason };
   };
 
   const messages: Message[] = [...initialMessages];
@@ -489,6 +511,19 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
               toolUseBlocks.map(async (toolUse) => {
                 checkAbort();
                 log.debug(`executing tool (parallel): ${toolUse.name}`);
+
+                const access = await checkToolAccess(toolUse.name);
+                if (!access.allowed) {
+                  log.warn(
+                    `Tool permission denied (parallel): ${toolUse.name} - ${access.reason}`,
+                  );
+                  return toolResultBlock(
+                    toolUse.id,
+                    `Permission denied: ${access.reason ?? 'Insufficient permissions'}`,
+                    true,
+                  );
+                }
+
                 let span: LangfuseSpanClient | undefined;
                 try {
                   span = trace?.span({
@@ -546,6 +581,22 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
             for (const toolUse of toolUseBlocks) {
               checkAbort();
               log.debug(`executing tool (serial): ${toolUse.name}`);
+
+              const access = await checkToolAccess(toolUse.name);
+              if (!access.allowed) {
+                log.warn(
+                  `Tool permission denied (serial): ${toolUse.name} - ${access.reason}`,
+                );
+                toolResults.push(
+                  toolResultBlock(
+                    toolUse.id,
+                    `Permission denied: ${access.reason ?? 'Insufficient permissions'}`,
+                    true,
+                  ),
+                );
+                continue;
+              }
+
               let span: LangfuseSpanClient | undefined;
               try {
                 span = trace?.span({

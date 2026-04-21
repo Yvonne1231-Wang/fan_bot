@@ -4,6 +4,7 @@ import type { LLMClient } from '../llm/types.js';
 import type { MessageHandler } from '../transport/adapter.js';
 import type { SkillEntry } from '../skills/types.js';
 import type { Tool, ToolRegistry } from '../tools/types.js';
+import type { PermissionService } from '../permission/index.js';
 import { createSubAgentTools } from '../agent/index.js';
 import {
   initObservability,
@@ -237,8 +238,9 @@ export function initCronScheduler(options: {
   messageHandler: MessageHandler;
   resultSender?: (result: string, context: MessageContext) => Promise<void>;
   defaultNotifyChatId?: string;
+  permissionService?: PermissionService;
 }): CronScheduler {
-  const { llmClient, messageHandler, resultSender, defaultNotifyChatId } =
+  const { llmClient, messageHandler, resultSender, defaultNotifyChatId, permissionService } =
     options;
 
   const store = new CronStore();
@@ -248,6 +250,7 @@ export function initCronScheduler(options: {
     memory: getMemory(),
     notificationHandler: messageHandler,
     resultSender,
+    permissionService,
   });
   const scheduler = new CronScheduler(store, executor);
 

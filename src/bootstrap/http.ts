@@ -49,6 +49,7 @@ export async function startHTTPServer(): Promise<void> {
     sessionManager,
     mediaConfig,
     getSkillEntries: getCachedSkillEntries,
+    permissionService,
   });
 
   adapter.setMessageHandler(async (message, callbacks) => {
@@ -96,6 +97,7 @@ export async function startHTTPServer(): Promise<void> {
     llmClient,
     messageHandler,
     resultSender: httpResultSender,
+    permissionService,
   });
   await cronScheduler.start();
 
