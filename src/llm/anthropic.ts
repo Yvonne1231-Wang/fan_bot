@@ -10,7 +10,24 @@ import type {
 } from './types.js';
 import { log } from '../utils/debug.js';
 
-const LLM_TIMEOUT_MS = 300000; // 5 min — 120s was too short for complex multi-tool conversations
+/**
+ * Anthropic LLM 单次请求超时（毫秒）。
+ *
+ * 可通过环境变量 `ANTHROPIC_LLM_TIMEOUT_MS` 覆盖，默认 5 分钟。
+ * 120s 对复杂的多工具调用场景（例如 cron 任务下的菜单抓取）过短，
+ * 因此保留 5 分钟作为默认值；若上游链路更长，可通过环境变量拉高。
+ *
+ * 解析规则：仅接受正整数；解析失败或非正数则回退到默认值。
+ */
+const DEFAULT_LLM_TIMEOUT_MS = 300_000;
+const LLM_TIMEOUT_MS = ((): number => {
+  const raw = process.env.ANTHROPIC_LLM_TIMEOUT_MS;
+  if (!raw) return DEFAULT_LLM_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_LLM_TIMEOUT_MS;
+})();
 const MAX_CONTENT_BLOCKS_PER_MESSAGE = 100;
 
 // ─── Types ──────────────────────────────────────────────────────────────────

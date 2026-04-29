@@ -144,6 +144,11 @@ export class LanceDBMemoryService implements MemoryService {
     if (existingTables.includes(TABLE_NAME)) {
       this.table = await this.db.openTable(TABLE_NAME);
       log.debug('Opened existing memories table');
+      // 兼容旧版 schema：后加的 accessCount / lastAccessedAt / memoryStrength 三列
+      // 在历史库中可能不存在，导致 update 时报 "Column '…' does not exist"，刷屏 WARN。
+      // 这里做一次性补列迁移，使用 LanceDB 的 addColumns(AddColumnsSql[]) 语义给每个缺失列
+      // 一个合理默认值（与新建表的 seedData 保持一致）。
+      await this.migrateLegacySchema();
     } else {
       const now = Date.now();
       const seedData: InternalRecord[] = [
@@ -170,6 +175,48 @@ export class LanceDBMemoryService implements MemoryService {
       });
       await this.table.delete("id = '__seed__'");
       log.debug('Created new memories table');
+    }
+  }
+
+  /**
+   * 补齐旧版 memories 表缺失的列。
+   *
+   * 背景：早期表结构没有 accessCount / lastAccessedAt / memoryStrength 三列，
+   * 但现有代码会对它们做 UPDATE，导致刷屏 "Column '…' does not exist" WARN。
+   * 这里读取当前 schema，对缺失列调用 addColumns 补齐，并给出与 seedData
+   * 一致的默认值（LanceDB addColumns 要求 SQL 表达式形式的默认值）。
+   *
+   * 幂等：已有列则跳过；整个过程失败时只打一条 WARN，不影响业务主流程。
+   */
+  private async migrateLegacySchema(): Promise<void> {
+    if (!this.table) return;
+
+    try {
+      const schema = await this.table.schema();
+      const existingColumns = new Set(schema.fields.map((f) => f.name));
+
+      // 期望列 → 填充给已有行的 SQL 默认值
+      // 数值列用 CAST(0 AS DOUBLE) 保证底层 arrow 类型正确；memoryStrength 给 1.0
+      const expected: Array<{ name: string; valueSql: string }> = [
+        { name: 'accessCount', valueSql: 'CAST(0 AS DOUBLE)' },
+        { name: 'lastAccessedAt', valueSql: 'CAST(0 AS DOUBLE)' },
+        { name: 'memoryStrength', valueSql: 'CAST(1.0 AS DOUBLE)' },
+      ];
+
+      const missing = expected.filter((c) => !existingColumns.has(c.name));
+      if (missing.length === 0) return;
+
+      log.info(
+        `Migrating legacy memories schema, adding columns: ${missing
+          .map((c) => c.name)
+          .join(', ')}`,
+      );
+
+      await this.table.addColumns(missing);
+      log.info(`Schema migration completed: ${missing.length} column(s) added`);
+    } catch (err) {
+      // 迁移失败不阻断初始化：后续的 UPDATE 仍会报 WARN，但至少主流程可用
+      log.warn(`Legacy schema migration failed: ${err}`);
     }
   }
 
@@ -570,7 +617,14 @@ export class LanceDBMemoryService implements MemoryService {
           `Memory strength recovered: ${recordId} ${currentStrength.toFixed(2)} → ${newStrength.toFixed(2)}`,
         );
       } catch (err) {
-        log.warn(`Failed to update access count for ${recordId}: ${err}`);
+        // 只保留错误短句；原 LanceDB 的 Error 会把完整 arrow schema dump 出来（>7KB/条），
+        // 在旧表缺列时会导致日志刷屏。schema migration 已经在 init 阶段处理了此问题，
+        // 这里进一步收窄错误信息宽度，避免偶发失败打爆日志。
+        const shortMsg =
+          err instanceof Error
+            ? err.message.split('\n')[0].slice(0, 200)
+            : String(err).slice(0, 200);
+        log.warn(`Failed to update access count for ${recordId}: ${shortMsg}`);
         const existing = this.accessTracker.get(recordId);
         if (existing) {
           existing.count += count;
