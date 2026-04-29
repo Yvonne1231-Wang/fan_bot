@@ -173,13 +173,20 @@ export async function registerDefaultTools(
   registerTool(writeFileTool);
   registerTool(listDirTool);
 
-  // Self-iteration tools
-  registerTool(selfModifyTool);
-  registerTool(selfRollbackTool);
-  registerTool(selfVersionsTool);
   registerTool(memoryListTool);
   registerTool(memoryDeleteTool);
   registerTool(memorySearchTool);
+
+  // Self-iteration tools - 默认禁用，需通过环境变量显式启用
+  // 启用方式：ENABLE_SELF_ITERATION=true pnpm start
+  if (process.env.ENABLE_SELF_ITERATION === 'true') {
+    registerTool(selfModifyTool);
+    registerTool(selfRollbackTool);
+    registerTool(selfVersionsTool);
+    log.info('Self-iteration tools enabled (ENABLE_SELF_ITERATION=true)');
+  } else {
+    log.info('Self-iteration tools disabled. Set ENABLE_SELF_ITERATION=true to enable.');
+  }
 
   const skillTools = await loadSkillTools();
   for (const tool of skillTools) {
