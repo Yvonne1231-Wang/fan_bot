@@ -112,16 +112,40 @@ export async function evaluateForSkill(
     return null;
   }
 
-  // 检查是否与已有技能重复
+  // 检查是否与已有技能或待确认技能重复
+  // 去重集合合并了两类来源，避免同一功能被反复提炼或静默覆盖 pending 草稿
   const toolNames = extractToolNames(messages);
   const existingSkills = getGlobalLoader().getAllSkills();
-  const existingNames = new Set(existingSkills.map((s) => s.metadata.name));
+  const pendingSkills = await listPendingSkills().catch(() => [] as PendingSkill[]);
+
+  // 统一收集 name + description，既用于硬匹配也喂给 LLM 做语义判断
+  const existingEntries: Array<{ name: string; description: string; origin: 'installed' | 'pending' }> = [
+    ...existingSkills.map((s) => ({
+      name: s.metadata.name,
+      description: s.metadata.description,
+      origin: 'installed' as const,
+    })),
+    ...pendingSkills.map((p) => ({
+      name: p.candidate.name,
+      description: p.candidate.description,
+      origin: 'pending' as const,
+    })),
+  ];
+  const existingNames = new Set(existingEntries.map((e) => e.name));
 
   const summary = extractConversationSummary(messages);
 
+  // 把已有技能的 description 一并塞进 prompt，LLM 才能判断语义覆盖
+  const existingListBlock = existingEntries.length
+    ? existingEntries
+        .map((e) => `- ${e.name} [${e.origin}]: ${e.description}`)
+        .join('\n')
+    : 'none';
+
   const evaluatePrompt = `Analyze this conversation and determine if it contains a reusable workflow pattern that should be saved as a skill.
 
-Existing skills (avoid duplicates): ${Array.from(existingNames).join(', ') || 'none'}
+Existing skills (including pending drafts — avoid duplicates and functional overlaps):
+${existingListBlock}
 
 Conversation:
 ${summary}
@@ -138,9 +162,10 @@ Respond in JSON format only:
 
 Rules:
 - isSkillWorthy = true only if: multi-step workflow with clear pattern, likely to be reused
-- isSkillWorthy = false if: one-off task, debugging/exploration, simple Q&A, already covered by existing skills
+- isSkillWorthy = false if: one-off task, debugging/exploration, simple Q&A, already covered by any existing skill (installed or pending) — judge by description, not just name
 - confidence < 0.6 → not worth extracting
-- name must be unique (not in existing skills list)`;
+- name must be unique (not in existing skills list above)
+- Do NOT rename a functionally-duplicate skill just to bypass the uniqueness check — mark it as not worthy instead`;
 
   try {
     const response = await llmClient.chat(
@@ -174,7 +199,10 @@ Rules:
     }
 
     if (existingNames.has(result.name)) {
-      log.debug(`Skill "${result.name}" already exists, skipping`);
+      const hit = existingEntries.find((e) => e.name === result.name);
+      log.debug(
+        `Skill "${result.name}" already exists (${hit?.origin ?? 'unknown'}), skipping`,
+      );
       return null;
     }
 
@@ -275,14 +303,41 @@ export interface PendingSkill {
 
 /**
  * 保存待确认的技能草稿。
+ *
+ * 写入前检查同名：若已存在 pending 草稿或已安装技能，则拒绝写入并返回 false，
+ * 避免静默覆盖用户尚未确认或已在使用的技能。
  */
-export async function savePendingSkill(pending: PendingSkill): Promise<void> {
+export async function savePendingSkill(pending: PendingSkill): Promise<boolean> {
   if (!existsSync(PENDING_DIR)) {
     await mkdir(PENDING_DIR, { recursive: true });
   }
-  const filePath = join(PENDING_DIR, `${pending.candidate.name}.json`);
+  const name = pending.candidate.name;
+  const filePath = join(PENDING_DIR, `${name}.json`);
+
+  // 检查 pending 目录是否已有同名草稿
+  if (existsSync(filePath)) {
+    log.warn(
+      `Pending skill "${name}" already exists, refusing to overwrite. ` +
+        `Confirm or reject the existing draft first.`,
+    );
+    return false;
+  }
+
+  // 检查已安装技能是否同名（需要 loader 已加载）
+  const installed = getGlobalLoader()
+    .getAllSkills()
+    .find((s) => s.metadata.name === name);
+  if (installed) {
+    log.warn(
+      `Skill "${name}" is already installed at ${installed.baseDir}, ` +
+        `refusing to create a duplicate pending draft.`,
+    );
+    return false;
+  }
+
   await writeFile(filePath, JSON.stringify(pending, null, 2));
-  log.info(`Saved pending skill: "${pending.candidate.name}"`);
+  log.info(`Saved pending skill: "${name}"`);
+  return true;
 }
 
 /**

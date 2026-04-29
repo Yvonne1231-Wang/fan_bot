@@ -20,6 +20,7 @@ import { registry, registerTool } from '../tools/registry.js';
 import { calculatorTool } from '../tools/calculator.js';
 import { readFileTool, writeFileTool, listDirTool } from '../tools/files.js';
 import { shellTool } from '../tools/shell.js';
+import { selfModifyTool, selfRollbackTool, selfVersionsTool } from '../tools/self-iteration.js';
 import { webSearchTool } from '../tools/web_search.js';
 import { webFetchTool } from '../tools/web_fetch.js';
 import { skillTool } from '../tools/skill.js';
@@ -171,9 +172,21 @@ export async function registerDefaultTools(
   registerTool(readFileTool);
   registerTool(writeFileTool);
   registerTool(listDirTool);
+
   registerTool(memoryListTool);
   registerTool(memoryDeleteTool);
   registerTool(memorySearchTool);
+
+  // Self-iteration tools - 默认禁用，需通过环境变量显式启用
+  // 启用方式：ENABLE_SELF_ITERATION=true pnpm start
+  if (process.env.ENABLE_SELF_ITERATION === 'true') {
+    registerTool(selfModifyTool);
+    registerTool(selfRollbackTool);
+    registerTool(selfVersionsTool);
+    log.info('Self-iteration tools enabled (ENABLE_SELF_ITERATION=true)');
+  } else {
+    log.info('Self-iteration tools disabled. Set ENABLE_SELF_ITERATION=true to enable.');
+  }
 
   const skillTools = await loadSkillTools();
   for (const tool of skillTools) {

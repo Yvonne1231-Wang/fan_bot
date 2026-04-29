@@ -10,7 +10,7 @@ import type {
   SkillNotifyPayload,
   CronExecutionResult,
 } from './types.js';
-import type { LLMClient } from '../llm/types.js';
+import type { LLMClient, AgentCallbacks } from '../llm/types.js';
 import type { ToolRegistry } from '../tools/types.js';
 import type { MessageHandler } from '../transport/adapter.js';
 import type { MemoryService } from '../memory/types.js';
@@ -32,8 +32,54 @@ const execFileAsync = promisify(execFile);
 
 const log = createDebug('cron:executor');
 
-const DEFAULT_CRON_MAX_ITERATIONS = 20;
+const DEFAULT_CRON_MAX_ITERATIONS = 10;
 const DEFAULT_CRON_TIMEOUT_MS = 300_000;
+
+/**
+ * 构造 cron Agent 的 callbacks：
+ * 当某个工具连续 2 次返回"空数据 / 认证失败"特征字符串时，
+ * 通过传入的 AbortController 立即终止 Agent 循环，避免无效重试烧 token。
+ *
+ * 注意：每次调用返回独立闭包实例，内部状态（计数器）不会跨任务污染。
+ */
+function buildCronAbortOnEmptyCallbacks(
+  hardStopController: AbortController,
+): AgentCallbacks {
+  const EMPTY_RESULT_THRESHOLD = 2;
+  // 空数据 / 认证失败的通用特征串（不绑定具体 skill）
+  const emptyPatterns: RegExp[] = [
+    /"hidden"\s*:\s*true/i,
+    /"hidingReason"/i,
+    /\b(无数据|菜单走丢|暂未发布|no\s+data|empty)\b/i,
+    /missing\s+access\s+token/i,
+    /mina\s+login\s+failed/i,
+    /\b(unauthorized|401|403)\b/i,
+    /"error"\s*:/i,
+  ];
+
+  let consecutiveEmpty = 0;
+
+  return {
+    onToolEnd: (toolName: string, output: string) => {
+      const text = String(output ?? '');
+      const matched = emptyPatterns.some((re) => re.test(text));
+      if (matched) {
+        consecutiveEmpty += 1;
+        log.warn(
+          `Cron agent tool "${toolName}" returned empty/auth-failure (${consecutiveEmpty}/${EMPTY_RESULT_THRESHOLD})`,
+        );
+        if (consecutiveEmpty >= EMPTY_RESULT_THRESHOLD) {
+          log.error(
+            `Cron agent hard-stop: consecutive empty/auth failures reached threshold, aborting`,
+          );
+          hardStopController.abort();
+        }
+      } else {
+        consecutiveEmpty = 0;
+      }
+    },
+  };
+}
 
 export interface CronResultSender {
   (result: string, context: MessageContext): Promise<void>;
@@ -128,10 +174,7 @@ export class CronExecutor {
         }
       }
 
-      await this.notifyCreator(
-        task,
-        `✅ 定时任务「${task.name}」已完成`,
-      );
+      await this.notifyCreator(task, `✅ 定时任务「${task.name}」已完成`);
 
       return {
         taskId: task.id,
@@ -163,10 +206,7 @@ export class CronExecutor {
    * 使用 createdBy（飞书 open_id）作为接收目标，
    * receiveIdType 设为 open_id 以确保消息发送到私聊窗口。
    */
-  private async notifyCreator(
-    task: CronTask,
-    message: string,
-  ): Promise<void> {
+  private async notifyCreator(task: CronTask, message: string): Promise<void> {
     if (!task.createdBy || !this.options.resultSender) {
       return;
     }
@@ -247,7 +287,42 @@ export class CronExecutor {
       const timeoutMs =
         Number(process.env.CRON_AGENT_TIMEOUT_MS) || DEFAULT_CRON_TIMEOUT_MS;
 
-      const cronGuidance = `\n\n[Cron 执行模式] 你是定时任务驱动的自主 Agent，没有用户在等待回复。你必须主动调用工具完成任务，不要只输出意图描述。如果需要搜索信息，请立即调用搜索工具；如果需要读取飞书消息，请立即调用相关工具。不要在第一次回复就结束——持续调用工具直到获取到完整结果。`;
+      // Cron 模式下给 Agent 的强约束 prompt
+      // 设计目标：让 Agent 专注业务目标，失败即停、不乱搞凭据/环境，消息发送交还 resultSender
+      const cronGuidance = [
+        '',
+        '',
+        '[Cron 执行模式]',
+        '你是定时任务驱动的自主 Agent，没有用户在等待交互回复。请严格遵守以下规则：',
+        '',
+        '## 目标',
+        '- 调用业务 skill / 工具完成任务；任务的"产出"是最终消息文本，由宿主进程统一发往飞书，你无需自行发送。',
+        '',
+        '## 发送渠道（重要）',
+        '- 宿主进程已持有飞书发送通道，会在你返回最终文本后自动推送到目标群聊。',
+        '- ⛔ 严禁自行 `curl` / `axios` / 写新脚本 调用飞书 OpenAPI 发消息。',
+        '- ⛔ 严禁通过 shell 调用 `lark-cli`、`npm run feishu:*`、`security find-generic-password`、`security dump-keychain` 等尝试获取或刷新凭据。',
+        '- ⛔ 严禁尝试登录飞书、刷新 token、修改 `.env` 或 keychain。',
+        '',
+        '## 失败处理（硬约束，违反即立刻停止）',
+        '- 同一类工具返回"无数据 / 空结果 / 认证失败 / hidingReason"连续 2 次，立即停止重试，直接输出简短错误摘要作为最终结果并结束。',
+        '- 明确的不可恢复错误（如 session 过期、token 缺失、API 403/401），立即以"❌ 原因 + 建议"格式结束，不要尝试自我修复。',
+        '- 绝不编写新脚本来"绕过"当前的失败：跑不通就按失败结束。',
+        '',
+        '## 输出纪律',
+        '- 完成任务后直接结束（stop_reason=end_turn），不要再额外迭代"确认一下"。',
+        '- 最终回复只保留对群聊用户有价值的内容，不要夹带技能分析、风格建议、情绪机制等元讨论。',
+      ].join('\n');
+
+      // 硬终止机制：把 timeout 与"空数据硬停"合并到单个 AbortController
+      // 作用域限定在本次 executeAgent 调用内，避免不同 cron 任务并发时相互干扰
+      const hardStopController = new AbortController();
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
+      timeoutSignal.addEventListener(
+        'abort',
+        () => hardStopController.abort(),
+        { once: true },
+      );
 
       const result = await runAgent({
         prompt: payload.prompt,
@@ -255,9 +330,10 @@ export class CronExecutor {
         toolRegistry,
         maxIterations,
         systemPrompt: systemPrompt + cronGuidance,
-        abortSignal: AbortSignal.timeout(timeoutMs),
+        abortSignal: hardStopController.signal,
         permissionService,
         messageContext,
+        callbacks: buildCronAbortOnEmptyCallbacks(hardStopController),
       });
 
       return result.response;
@@ -337,7 +413,11 @@ export class CronExecutor {
     const { permissionService } = this.options;
     const effectiveUserId = userId || 'cron-system';
 
-    if (permissionService && effectiveUserId !== 'cron-system' && effectiveUserId !== 'system') {
+    if (
+      permissionService &&
+      effectiveUserId !== 'cron-system' &&
+      effectiveUserId !== 'system'
+    ) {
       const access = await permissionService.checkToolPermission(
         {
           channel: 'http',
